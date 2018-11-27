@@ -72,7 +72,7 @@ runGen (Semicolon meas p1 p2) =
 --
 -- The "uniform" case means that
 --   base . singleton
---     === const $ recip . fromInteger $ length everything
+--     === const $ recip . fromIntegral $ length everything
 -- but only nondegeneracy is assumed.
 --
 -- A function d :: pa -> Double is then a distribution when it satisfies
@@ -88,56 +88,38 @@ runGen (Semicolon meas p1 p2) =
 --     sum $ map (\x -> (deriv x) * (base $ singleton x)) $ toList u
 --
 -- Under these assumptions, the "correct" convolve satisfies
---   convolve d1 d2 $ singleton x ===
---     sum $ map (\y ->
---         (d2 (singleton y) (singleton x)) * (d1 $ singleton y)
+--   convolve d1 d2 $ singleton y ===
+--     sum $ map (\x ->
+--         (d2 (singleton x) (singleton y)) * (d1 $ singleton x)
 --       ) everything
---
--- The example below fits the pattern of this comment block.
 
+
+uniformSpace :: (Eq a) => [a] -> MeasureSpace a [a]
+uniformSpace everything =
+  MeasureSpace singleton memberof base convolve
+  where
+    singleton = (:[])
+    memberof = elem
+    base = const $ recip . fromIntegral $ length everything
+    convolve d1 d2 u =
+      sum $ map (\y ->
+        sum $ map (\x -> (d2 [x] [y]) * (d1 [x])) everything) u
+toDeriv :: (MeasureSpace a pa) -> (pa -> Double) -> a -> Double
+toDeriv meas d x = (d $ singleton meas x) / (base meas $ singleton meas x)
+-- We cheat a little bit here:
+fromDeriv :: (MeasureSpace a [a]) -> (a -> Double) -> [a] -> Double
+fromDeriv meas deriv u =
+  sum $ map (\x -> (deriv x) * (base meas $ singleton meas x)) u
 
 -- Example:
 -- All the unknown random state consists of a single coin toss outcome.
 data MySampleSpace = Tails | Heads deriving (Show, Ord, Eq)
-data MyPSampleSpace = PSSNone | PSSTails | PSSHeads | PSSAll deriving (Show, Ord, Eq)
-mySingleton Tails = PSSTails
-mySingleton Heads = PSSHeads
-myMemberof Tails PSSTails = True
-myMemberof Heads PSSHeads = True
-myMemberof _ PSSAll = True
-myMemberof _ _ = False
-myBase PSSNone = 0.0
-myBase PSSTails = 0.5
-myBase PSSHeads = 0.5
-myBase PSSAll = 1.0
-myConvolve d1 d2 PSSNone = 0.0
-myConvolve d1 d2 PSSTails =
-  (d2 PSSTails PSSTails) * (d1 PSSTails) +
-  (d2 PSSHeads PSSTails) * (d1 PSSHeads)
-myConvolve d1 d2 PSSHeads =
-  (d2 PSSTails PSSHeads) * (d1 PSSTails) +
-  (d2 PSSHeads PSSHeads) * (d1 PSSHeads)
-myConvolve d1 d2 PSSAll = sum $ map (myConvolve d1 d2) [PSSTails, PSSHeads]
-myMeas = MeasureSpace mySingleton myMemberof myBase myConvolve
-
--- Supporting code
-everything = [Tails, Heads]
-toList PSSNone = []
-toList PSSTails = [Tails]
-toList PSSHeads = [Heads]
-toList PSSAll = everything
-fromList [] = PSSNone
-fromList [Tails] = PSSTails
-fromList [Heads] = PSSHeads
-fromList everything = PSSAll
-toDeriv d x = (d $ mySingleton x) / (myBase $ mySingleton x)
-fromDeriv deriv u =
-  sum $ map (\x -> (deriv x) * (myBase $ mySingleton x)) $ toList u
+myMeas = uniformSpace [Tails, Heads]
 
 
-debug :: (MyPSampleSpace -> Double) -> String
+debug :: ([MySampleSpace] -> Double) -> String
 debug d =
-  "Tails: " ++ (show $ d PSSTails) ++ ", Heads: " ++ (show $ d PSSHeads)
+  "Tails: " ++ (show $ d [Tails]) ++ ", Heads: " ++ (show $ d [Heads])
 
 initialKnowledge = Ret myMeas Tails
 
@@ -146,23 +128,24 @@ initialKnowledge2Deriv Tails = 0.8
 initialKnowledge2Deriv Heads = 0.2
 initialKnowledge2 =
   Sample myMeas 0 $
-    Distribution (fromDeriv initialKnowledge2Deriv) initialKnowledge2Deriv
+    Distribution (fromDeriv myMeas initialKnowledge2Deriv) initialKnowledge2Deriv
 
-drunkenNotBase :: MyPSampleSpace -> MyPSampleSpace -> Double
-drunkenNotBase PSSNone  _        = 0.0
-drunkenNotBase _        PSSNone  = 0.0
-drunkenNotBase PSSTails PSSHeads = 0.9
-drunkenNotBase PSSTails PSSTails = 0.1
-drunkenNotBase PSSTails PSSAll   = 1.0
-drunkenNotBase PSSHeads PSSTails = 0.9
-drunkenNotBase PSSHeads PSSHeads = 0.1
-drunkenNotBase PSSHeads PSSAll   = 1.0
-drunkenNotBase PSSAll   PSSAll   = 2.0
+drunkenNotBase :: [MySampleSpace] -> [MySampleSpace] -> Double
+drunkenNotBase []      _       = 0.0
+drunkenNotBase _       []      = 0.0
+drunkenNotBase [Tails] [Heads] = 0.9
+drunkenNotBase [Tails] [Tails] = 0.1
+drunkenNotBase [Tails] [Tails,Heads] = 1.0
+drunkenNotBase [Heads] [Tails] = 0.9
+drunkenNotBase [Heads] [Heads] = 0.1
+drunkenNotBase [Heads] [Tails,Heads] = 1.0
+drunkenNotBase [Tails,Heads] [Tails,Heads] = 2.0
 drunkenNot ::
-  key -> MyPSampleSpace -> GenerativeFunction key MySampleSpace MyPSampleSpace
+  key -> [MySampleSpace] ->
+    GenerativeFunction key MySampleSpace [MySampleSpace]
 drunkenNot key x =
   let f y = drunkenNotBase x y in
-    Sample myMeas key (Distribution f (toDeriv f))
+    Sample myMeas key (Distribution f (toDeriv myMeas f))
 
 computedKnowledge = 
   Semicolon myMeas (
@@ -170,4 +153,4 @@ computedKnowledge =
 computedKnowledge2 = 
   Semicolon myMeas (
     Semicolon myMeas initialKnowledge2 (drunkenNot 1)) (drunkenNot 2)
--- try: debug (runGen computedKnowledge)
+-- try: debug $ runGen computedKnowledge
