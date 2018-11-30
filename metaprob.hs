@@ -4,21 +4,20 @@ enumValues = enumFrom (toEnum 0)
 test :: (Eq a) => a -> a -> b -> b -> b
 test x y u v = if x == y then u else v
 
-data Traced keys values = Trace
+-- Plays the role of A x Trace in the paper, where A = values
+data Traced keys values = Traced
   { val :: values
   , tr :: [(keys,String)] }
-trace :: (Show values) => values -> [(keys,values)] -> Traced keys values
-trace v ts = Trace v $ map (\kx -> (fst kx,show $ snd kx)) ts
 instance (Eq keys, Eq values) => Eq (Traced keys values) where
   xs == yt = val xs == val yt && tr xs == tr yt
 instance (Enum keys, Enum values) => Enum (Traced keys values) where
   toEnum = undefined
   fromEnum = undefined
 instance Functor (Traced keys) where
-  fmap f t = Trace (f $ val t) (tr t)
-tunit :: values -> (Traced keys values)
-tunit v = Trace v []
+  fmap f t = Traced (f $ val t) (tr t)
 
+-- Operations we need to be able to perform on distributions in order
+-- to implement operations on generative functions
 class DistrOps distrs where
   -- Needed for runGen
   dirac :: (Eq elts) => elts -> distrs elts
@@ -27,16 +26,12 @@ class DistrOps distrs where
   -- Needed for runTracing
   traceless :: (distrs elts) -> distrs (Traced keys elts)
 
-data DDistrs distrs elts = DDistr
+data Samplable distrs elts = Samplable
   { sample :: distrs elts
   , score :: elts -> Double }
 
-tracelessd :: (DistrOps distrs) =>
-  (DDistrs distrs elts) -> DDistrs distrs (Traced keys elts)
-tracelessd dd = DDistr (traceless $ sample dd) ((score dd) . val)
-
 data GenFn keys distrs elts =
-  Sample keys (DDistrs distrs elts) |
+  Sample keys (Samplable distrs elts) |
   Ret elts |
   Semicolon (GenFn keys distrs elts) (elts -> GenFn keys distrs elts)
 
@@ -49,15 +44,15 @@ runGen (Semicolon p1 p2) = convolve (runGen p1) (runGen . p2)
 runTracing :: (Eq elts, Enum elts, Show elts, DistrOps distrs) =>
   (GenFn keys distrs elts) -> GenFn keys distrs (Traced keys elts)
 runTracing (Sample key dist) = Semicolon
-  (Sample key (tracelessd dist))
-  (\xt -> Ret $ trace (val xt) [(key,val xt)])
-runTracing (Ret elt) = Ret $ tunit elt
+  (Sample key $ Samplable (traceless $ sample dist) ((score dist) . val))
+  (\xt -> Ret $ Traced (val xt) [(key, show $ val xt)])
+runTracing (Ret elt) = Ret $ Traced elt []
 runTracing (Semicolon p1 p2) =
   Semicolon
     (runTracing p1)
     (\xs -> Semicolon
       (runTracing (p2 (val xs)))
-      (\yt -> Ret $ Trace (val yt) ((tr xs) ++ (tr yt)) ))
+      (\yt -> Ret $ Traced (val yt) ((tr xs) ++ (tr yt)) ))
 
 -- Meta-example
 data Distrs elts = Distr { mu :: elts -> Double }
@@ -73,13 +68,13 @@ instance DistrOps Distrs where
 -- All the unknown random state consists of a single coin toss outcome.
 data MySet = Tails | Heads deriving (Show, Eq, Enum)
 mySet = [Tails, Heads]
-makeDDistr f = DDistr (Distr f) f
+makeSamplable f = Samplable (Distr f) f
 
 input = Ret Tails
 input2Elems Tails = 0.8
 input2Elems Heads = 0.2
-input2 = Sample 0 $ makeDDistr input2Elems
-drunkenNot key x = Sample key $ makeDDistr (\y -> test x y 0.1 0.9)
+input2 = Sample 0 $ makeSamplable input2Elems
+drunkenNot key x = Sample key $ makeSamplable (\y -> test x y 0.1 0.9)
 computed = Semicolon (Semicolon input (drunkenNot 1)) (drunkenNot 2)
 computed2 = Semicolon (Semicolon input2 (drunkenNot 1)) (drunkenNot 2)
 
@@ -89,8 +84,8 @@ debugGen d =
 
 debugTrace :: (Distrs (Traced Integer MySet)) -> String
 debugTrace d =
-  "  Tails: " ++ (show $ mu d $ trace Tails []) ++
-  ", Heads: " ++ (show $ mu d $ trace Heads [])
+  "  Tails: " ++ (show $ mu d $ Traced Tails []) ++
+  ", Heads: " ++ (show $ mu d $ Traced Heads [])
 
 -- try:
 -- debugGen $ runGen computed
