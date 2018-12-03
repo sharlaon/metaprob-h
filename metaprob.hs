@@ -11,19 +11,22 @@
 -- `distr a` represents distributions R(f(A)).
 -- `GenFn key distr elt a` represents generative functions `P(f(A))`.
 -- `runGen p` corresponds to [[p]]_g.
+-- `tracing` corresponds to the transformation tracing
 
 data GenFn key distr elt a =
-  Sample key (distr a) |
+  Sample key (distr a) (elt a -> Double) |
   Ret (elt a) |
   Semicolon (GenFn key distr elt a) (elt a -> GenFn key distr elt a)
 
 class Distr distr elt | distr -> elt where
   dirac :: elt a -> distr a
   convolve :: Eq a => distr a -> (elt a -> distr a) -> distr a
-  runGen :: Eq a => GenFn key distr elt a -> distr a
-  runGen (Sample key sample) = sample
-  runGen (Ret e) = dirac e
-  runGen (Semicolon p1 p2) = convolve (runGen p1) (runGen . p2)
+
+runGen :: (Eq a, Distr distr elt) =>
+          GenFn key distr elt a -> distr a
+runGen (Sample k sample score) = sample
+runGen (Ret e) = dirac e
+runGen (Semicolon p1 p2) = convolve (runGen p1) (runGen . p2)
 
 class Tracing1 trace where
   emptyTrace :: trace key
@@ -44,7 +47,9 @@ class Tracing1 trace =>
 
 class Tracing2 traced trace elt =>
       Tracing3 tdistr traced trace distr elt |
-      tdistr -> traced distr, traced -> trace elt, distr -> tdistr elt where
+      tdistr -> traced distr,
+      traced -> trace elt,
+      distr -> tdistr elt where
   -- Needed for runTracing
   pushForward :: distr a -> tdistr key a
   -- Needed for runGen after runTracing
@@ -58,13 +63,11 @@ instance (Eq key, Tracing3 tdistr traced trace distr elt) =>
   dirac = tdirac
   convolve = tconvolve
 
--- This corresponds to the transformation tracing from P(A) to P(A x
--- Tracing) in the paper.
 tracing :: (Tracing3 tdistr traced trace distr elt, Show (elt a)) =>
            GenFn key distr elt a
              -> GenFn key (tdistr key) (traced key) a
-tracing (Sample k dist) = Semicolon
-  (Sample k $ pushForward dist)
+tracing (Sample k dist score) = Semicolon
+  (Sample k (pushForward dist) (extendByZero score))
   (\xt -> let x = getTracedVal xt in
           Ret $ makeTraced x $ kvTrace k $ show x)
 tracing (Ret x) = Ret $ withEmptyTrace x
@@ -74,7 +77,7 @@ tracing (Semicolon p1 p2) = Semicolon
     (tracing (p2 $ getTracedVal xs))
     (\yt -> Ret $ makeTraced
       (getTracedVal yt)
-      (appendTrace (getTracedTr xs) (getTracedTr yt))))
+      (appendTrace (getTracedTr yt) (getTracedTr xs))))
 
 
 -- Default implementation of shared items
@@ -129,13 +132,19 @@ instance Tracing3 TDiracs MyTraced MyTrace Diracs MyElt where
 -- Infra-example:
 -- All the unknown random state consists of a single coin toss outcome.
 data MySet = Tails | Heads deriving (Show, Eq)
+myNot Tails = Heads
+myNot Heads = Tails
 
 input = Ret $ MyElt Tails :: GenFn Integer Diracs MyElt MySet
-input2 = Sample 0 $ Diracs [(MyElt Tails, 1.0)]
+input2 = Sample 0
+                (Diracs [(MyElt Tails, 1.0)])
+                (\(MyElt y) -> if y == Tails then 1.0 else 0.0)
   :: GenFn Integer Diracs MyElt MySet
-drunkenNot key (MyElt x) = Sample key . Diracs $
-  if x == Heads then [(MyElt Tails, 0.9), (MyElt Heads, 0.1)]
-                else [(MyElt Tails, 0.1), (MyElt Heads, 0.9)]
+drunkenNot k (MyElt x) = Sample
+  k
+  (Diracs [(MyElt $ myNot x, 0.9), (MyElt x, 0.1)])
+  (\(MyElt y) ->
+     if y == x then 0.1 else if y == myNot x then 0.9 else 0)
 computed = Semicolon (Semicolon input (drunkenNot 1)) (drunkenNot 2)
 computed2 = Semicolon (Semicolon input2 (drunkenNot 1)) (drunkenNot 2)
 
@@ -173,12 +182,16 @@ instance Tracing3 TSampler MyTraced MyTrace Sampler MyElt where
 -- Infra-example:
 
 inptt = Ret $ MyElt Tails :: GenFn Integer Sampler MyElt MySet
-inptt2 = Sample 0 $ Sampler (\_ -> Tails)
+inptt2 = Sample 0
+                (makeSampler Tails)
+                (\(MyElt y) -> if y == Tails then 1.0 else 0.0)
   :: GenFn Integer Sampler MyElt MySet
 -- Currently there is no way to do drunkenNot non-deterministically
-ntt Tails = Heads
-ntt Heads = Tails
-drunkenNtt key (MyElt x) = Sample key . makeSampler . ntt $ x
+drunkenNtt k (MyElt x) = Sample
+  k
+  (makeSampler $ myNot x)
+  (\(MyElt y) ->
+     if y == x then 0.1 else if y == myNot x then 0.9 else 0)
 comptted = Semicolon (Semicolon inptt (drunkenNtt 1)) (drunkenNtt 2)
 comptted2 = Semicolon (Semicolon inptt2 (drunkenNtt 1)) (drunkenNtt 2)
 
