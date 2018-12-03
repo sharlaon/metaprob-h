@@ -148,22 +148,26 @@ computed2 = Semicolon (Semicolon input2 (drunkenNot 1)) (drunkenNot 2)
 
 -- Meta-example: Executing sampling prodedures
 data Sampler a = Sampler { sampler :: () -> a }
+makeSampler :: a -> Sampler a
+makeSampler x = Sampler (\_ -> x)
 sample :: Sampler a -> a
 sample (Sampler s) = s ()
 instance Show a => Show (Sampler a) where
   show (Sampler s) = "() -> " ++ show (s ())
 instance Distr Sampler MyElt where
-  dirac (MyElt x) = Sampler (\_ -> x)
+  dirac = makeSampler . myElt
   convolve (Sampler s1) s2 = s2 . MyElt . s1 $ ()
 data TSampler key a = TSampler { tsampler :: () -> MyTraced key a  }
+makeTSampler :: MyTraced key a -> TSampler key a
+makeTSampler x = TSampler (\_ -> x)
 tsample :: TSampler key a -> MyTraced key a
 tsample d = tsampler d ()
 instance (Show a, Show key) => Show (TSampler key a) where
   show (TSampler ts) = "() -> " ++ (show $ ts ())
 instance Tracing3 TSampler MyTraced MyTrace Sampler MyElt where
   pushForward (Sampler s) =
-    TSampler (\_ -> MyTraced (MyElt $ s (), emptyTrace))
-  tdirac tx = TSampler (\_ -> tx)
+    makeTSampler $ MyTraced (MyElt $ s (), emptyTrace)
+  tdirac = makeTSampler
   tconvolve (TSampler s1) s2 = s2 . s1 $ ()
 
 -- Infra-example:
@@ -171,16 +175,16 @@ instance Tracing3 TSampler MyTraced MyTrace Sampler MyElt where
 inptt = Ret $ MyElt Tails :: GenFn Integer Sampler MyElt MySet
 inptt2 = Sample 0 $ Sampler (\_ -> Tails)
   :: GenFn Integer Sampler MyElt MySet
-
--- drunkenNot key (MyElt x) = Sample key . Diracs $
---   if x == Heads then [(MyElt Tails, 0.9), (MyElt Heads, 0.1)]
---                 else [(MyElt Tails, 0.1), (MyElt Heads, 0.9)]
--- computed = Semicolon (Semicolon input (drunkenNot 1)) (drunkenNot 2)
--- computed2 = Semicolon (Semicolon input2 (drunkenNot 1)) (drunkenNot 2)
+-- Currently there is no way to do drunkenNot non-deterministically
+ntt Tails = Heads
+ntt Heads = Tails
+drunkenNtt key (MyElt x) = Sample key . makeSampler . ntt $ x
+comptted = Semicolon (Semicolon inptt (drunkenNtt 1)) (drunkenNtt 2)
+comptted2 = Semicolon (Semicolon inptt2 (drunkenNtt 1)) (drunkenNtt 2)
 
 -- try:
--- runGen computed
--- runGen . tracing $ computed
+-- runGen comptted
+-- runGen . tracing $ comptted
 -- vs.:
--- runGen computed2
--- runGen . tracing $ computed2
+-- runGen comptted2
+-- runGen . tracing $ comptted2
