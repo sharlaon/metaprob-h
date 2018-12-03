@@ -46,12 +46,13 @@ class Tracing1 trace =>
       Tracing2 traced trace elt |
       traced -> trace, traced -> elt where
   getTraced :: traced key a -> (elt a, trace key)
-  getTracedVal :: traced key a -> elt a
-  getTracedTr :: traced key a -> trace key
   makeTraced :: elt a -> trace key -> traced key a
+withEmptyTrace :: Tracing2 traced trace elt => elt a -> traced key a
 withEmptyTrace x = makeTraced x emptyTrace
+extendByZero :: Tracing2 traced trace elt =>
+                (elt a -> Double) -> traced key a -> Double
 extendByZero f xt = let (x, t) = getTraced xt in
-                      if null $ getTrace t then f x else 0.0
+                    if null $ getTrace t then f x else 0.0
 
 -- Describes R(A x Tracing)
 class Tracing2 traced trace elt =>
@@ -80,16 +81,17 @@ tracing :: (Tracing3 tdistr traced trace distr elt, Show (elt a)) =>
              -> GenFn key (tdistr key) (traced key) a
 tracing (Sample k dist score) = Semicolon
   (Sample k (pushForward dist) (extendByZero score))
-  (\xt -> let x = getTracedVal xt in
+  (\xt -> let (x, _) = getTraced xt in
           Ret $ makeTraced x $ kvTrace k $ TNone $ show  x)
 tracing (Ret x) = Ret $ withEmptyTrace x
-tracing (Semicolon p1 p2) = Semicolon
-  (tracing p1)
-  (\xs -> Semicolon
-    (tracing (p2 $ getTracedVal xs))
-    (\yt -> Ret $ makeTraced
-      (getTracedVal yt)
-      (appendTrace (getTracedTr yt) (getTracedTr xs))))
+tracing (Semicolon p1 p2) =
+  Semicolon
+    (tracing p1)
+    (\xs -> let (x, s) = getTraced xs in
+            Semicolon
+              (tracing (p2 x))
+              (\yt -> let (y, t) = getTraced yt in
+                      Ret $ makeTraced y (appendTrace t s)))
 
 --
 -- Examples
@@ -111,8 +113,6 @@ data MyTraced key a = MyTraced
   { myTraced :: (MyElt a, MyTrace key) } deriving (Eq, Show)
 instance Tracing2 MyTraced MyTrace MyElt where
   getTraced = myTraced
-  getTracedVal = fst . myTraced
-  getTracedTr = snd . myTraced
   makeTraced x t = MyTraced (x, t)
 
 --
@@ -127,7 +127,7 @@ squashDiracs ((x,v):xvs) =
   let yws = squashDiracs xvs
       hit = filter (\yw -> fst yw == x) yws
       miss = filter (\yw -> fst yw /= x) yws in
-  if null hit then (x,v):yws else (x, v + (snd . head $ hit)):miss
+  if null hit then (x, v):yws else (x, v + (snd . head $ hit)):miss
 data Diracs a = Diracs { diracs :: [(MyElt a, Double)] }
      deriving Show
 instance Distr Diracs MyElt where
