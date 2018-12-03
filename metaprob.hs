@@ -33,23 +33,25 @@ runGen (Ret e) = dirac e
 runGen (Semicolon p1 p2) = convolve (runGen p1) (runGen . p2)
 
 -- Describes the type Trace
+data TValue = TNone String | Intervene String | Observe String
+  deriving (Eq, Show)
 class Tracing1 trace where
+  getTrace :: trace key -> [(key, TValue)]
   emptyTrace :: trace key
-  kvTrace :: key -> String -> trace key
+  kvTrace :: key -> TValue -> trace key
   appendTrace :: trace key -> trace key -> trace key
-  getTrace :: trace key -> [(key,String)]
 
 -- Describes A x Trace
 class Tracing1 trace =>
       Tracing2 traced trace elt |
       traced -> trace, traced -> elt where
-  makeTraced :: elt a -> trace key -> traced key a
   getTraced :: traced key a -> (elt a, trace key)
   getTracedVal :: traced key a -> elt a
   getTracedTr :: traced key a -> trace key
-  withEmptyTrace :: elt a -> traced key a
-  withEmptyTrace x = makeTraced x emptyTrace
-  extendByZero :: (elt a -> Double) -> (traced key a -> Double)
+  makeTraced :: elt a -> trace key -> traced key a
+withEmptyTrace x = makeTraced x emptyTrace
+extendByZero f xt = let (x, t) = getTraced xt in
+                      if null $ getTrace t then f x else 0.0
 
 -- Describes R(A x Tracing)
 class Tracing2 traced trace elt =>
@@ -79,7 +81,7 @@ tracing :: (Tracing3 tdistr traced trace distr elt, Show (elt a)) =>
 tracing (Sample k dist score) = Semicolon
   (Sample k (pushForward dist) (extendByZero score))
   (\xt -> let x = getTracedVal xt in
-          Ret $ makeTraced x $ kvTrace k $ show x)
+          Ret $ makeTraced x $ kvTrace k $ TNone $ show  x)
 tracing (Ret x) = Ret $ withEmptyTrace x
 tracing (Semicolon p1 p2) = Semicolon
   (tracing p1)
@@ -98,22 +100,20 @@ tracing (Semicolon p1 p2) = Semicolon
 --
 
 data MyElt a = MyElt { myElt :: a } deriving (Eq, Show)
-data MyTrace key = MyTrace { myTrace :: [(key, String)] }
+data MyTrace key = MyTrace { myTrace :: [(key, TValue)] }
      deriving (Eq, Show)
 instance Tracing1 MyTrace where
+  getTrace = myTrace
   emptyTrace = MyTrace []
   kvTrace k v = MyTrace [(k, v)]
   appendTrace t1 t2 = MyTrace (myTrace t1 ++ myTrace t2)
-  getTrace = myTrace
 data MyTraced key a = MyTraced
   { myTraced :: (MyElt a, MyTrace key) } deriving (Eq, Show)
 instance Tracing2 MyTraced MyTrace MyElt where
-  makeTraced x t = MyTraced (x, t)
   getTraced = myTraced
   getTracedVal = fst . myTraced
   getTracedTr = snd . myTraced
-  extendByZero f xt = let (x, t) = myTraced xt in
-                      if null $ myTrace t then f x else 0.0
+  makeTraced x t = MyTraced (x, t)
 
 --
 -- Meta-example 1:
