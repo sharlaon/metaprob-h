@@ -3,37 +3,43 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE UndecidableInstances #-}
 
--- Here is our notation compared with the Metaprob paper
--- `key` plays the role of K.
--- `a` plays the role of A.
--- `elt a` represents f(A) for some fixed parametric type in the world
---   of the paper.  Key examples: f(A) = A, or f(A) = A x Trace.
--- `distr a` represents distributions R(f(A)).
--- `GenFn key distr elt a` represents generative functions `P(f(A))`.
--- `runGen p` corresponds to [[p]]_g.
--- `tracing` corresponds to the transformation tracing
+--
+-- Interface for Metaprob
+--
 
+-- Here is some of our notation compared with the Metaprob paper:
+--   * The space K of trace keys is represented by `key`.
+--   * The type A of elements we wish to compute about is `a`.
+--   * We fix some parametric type f(A) in the world of the paper.
+--     * Key examples: f(A) = A, and f(A) = A x Trace.
+-- The rest of the correspondence is documented as we go.
+
+-- Describes distributions R(f(A)) on elements f(A)
+class Distr distr elt | distr -> elt where
+  dirac :: elt a -> distr a
+  convolve :: Eq a => distr a -> (elt a -> distr a) -> distr a
+
+-- Defines generative functions P(f(A)) in terms of f(A) and R(f(A))
 data GenFn key distr elt a =
   Sample key (distr a) (elt a -> Double) |
   Ret (elt a) |
   Semicolon (GenFn key distr elt a) (elt a -> GenFn key distr elt a)
 
-class Distr distr elt | distr -> elt where
-  dirac :: elt a -> distr a
-  convolve :: Eq a => distr a -> (elt a -> distr a) -> distr a
-
+-- Defines the "Gen" interpretation [[ ]]_g from P(f(A)) to R(f(A))
 runGen :: (Eq a, Distr distr elt) =>
           GenFn key distr elt a -> distr a
 runGen (Sample k sample score) = sample
 runGen (Ret e) = dirac e
 runGen (Semicolon p1 p2) = convolve (runGen p1) (runGen . p2)
 
+-- Describes the type Trace
 class Tracing1 trace where
   emptyTrace :: trace key
   kvTrace :: key -> String -> trace key
   appendTrace :: trace key -> trace key -> trace key
   getTrace :: trace key -> [(key,String)]
 
+-- Describes A x Trace
 class Tracing1 trace =>
       Tracing2 traced trace elt |
       traced -> trace, traced -> elt where
@@ -45,6 +51,7 @@ class Tracing1 trace =>
   withEmptyTrace x = makeTraced x emptyTrace
   extendByZero :: (elt a -> Double) -> (traced key a -> Double)
 
+-- Describes R(A x Tracing)
 class Tracing2 traced trace elt =>
       Tracing3 tdistr traced trace distr elt |
       tdistr -> traced distr,
@@ -57,12 +64,15 @@ class Tracing2 traced trace elt =>
   tconvolve ::
     (Eq a, Eq key) =>
     tdistr key a -> (traced key a -> tdistr key a) -> tdistr key a
-
 instance (Eq key, Tracing3 tdistr traced trace distr elt) =>
          Distr (tdistr key) (traced key) where
   dirac = tdirac
   convolve = tconvolve
 
+-- We get P(A x Tracing) for free as
+-- `GenFn key (tdistr key) (traced key) a`.
+
+-- Describes the transformation tracing from P(A) to P(A x Tracing)
 tracing :: (Tracing3 tdistr traced trace distr elt, Show (elt a)) =>
            GenFn key distr elt a
              -> GenFn key (tdistr key) (traced key) a
@@ -79,8 +89,14 @@ tracing (Semicolon p1 p2) = Semicolon
       (getTracedVal yt)
       (appendTrace (getTracedTr yt) (getTracedTr xs))))
 
+--
+-- Examples
+--
 
+--
 -- Default implementation of shared items
+--
+
 data MyElt a = MyElt { myElt :: a } deriving (Eq, Show)
 data MyTrace key = MyTrace { myTrace :: [(key, String)] }
      deriving (Eq, Show)
@@ -99,8 +115,12 @@ instance Tracing2 MyTraced MyTrace MyElt where
   extendByZero f xt = let (x, t) = myTraced xt in
                       if null $ myTrace t then f x else 0.0
 
--- Meta-example: Measure-theoretically, tracking point masses in the
--- support of the distribution
+--
+-- Meta-example 1:
+-- Measure-theoretically, tracking point masses in the support of the
+-- distribution
+--
+
 squashDiracs :: Eq a => [(a, Double)] -> [(a, Double)]
 squashDiracs [] = []
 squashDiracs ((x,v):xvs) =
@@ -129,8 +149,11 @@ instance Tracing3 TDiracs MyTraced MyTrace Diracs MyElt where
                     (tdiracs $ d2 x))
         (tdiracs d1)
   
--- Infra-example:
+--
+-- Infra-example 1:
 -- All the unknown random state consists of a single coin toss outcome.
+--
+
 data MySet = Tails | Heads deriving (Show, Eq)
 myNot Tails = Heads
 myNot Heads = Tails
@@ -155,7 +178,10 @@ computed2 = Semicolon (Semicolon input2 (drunkenNot 1)) (drunkenNot 2)
 -- runGen computed2
 -- runGen . tracing $ computed2
 
--- Meta-example: Executing sampling prodedures
+--
+-- Meta-example 2: Executing sampling prodedures
+--
+
 data Sampler a = Sampler { sampler :: () -> a }
 makeSampler :: a -> Sampler a
 makeSampler x = Sampler (\_ -> x)
@@ -179,14 +205,16 @@ instance Tracing3 TSampler MyTraced MyTrace Sampler MyElt where
   tdirac = makeTSampler
   tconvolve (TSampler s1) s2 = s2 . s1 $ ()
 
--- Infra-example:
+--
+-- Infra-example 2:
+--
 
 inptt = Ret $ MyElt Tails :: GenFn Integer Sampler MyElt MySet
 inptt2 = Sample 0
                 (makeSampler Tails)
                 (\(MyElt y) -> if y == Tails then 1.0 else 0.0)
   :: GenFn Integer Sampler MyElt MySet
--- Currently there is no way to do drunkenNot non-deterministically
+-- TODO: hook into a random monad; the sample is deterministic for now
 drunkenNtt k (MyElt x) = Sample
   k
   (makeSampler $ myNot x)
