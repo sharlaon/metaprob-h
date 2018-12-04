@@ -32,38 +32,34 @@ runGen (Sample k sample score) = sample
 runGen (Ret e) = dirac e
 runGen (Semicolon p1 p2) = convolve (runGen p1) (runGen . p2)
 
--- Describes the type Trace
 data TValue = TNone String | Intervene String | Observe String
               deriving (Eq, Show)
-class Trace trace where
+-- Describes the types Trace and A x Trace
+class Trace traced trace elt |
+      trace -> traced elt, traced -> trace where
   getTrace :: trace key -> [(key, TValue)]
   emptyTrace :: trace key
   kvTrace :: key -> TValue -> trace key
   appendTrace :: trace key -> trace key -> trace key
-
--- Describes A x Trace
-class Trace trace =>
-      Traced traced trace elt |
-      traced -> trace elt where
   getTraced :: traced key a -> (elt a, trace key)
   makeTraced :: elt a -> trace key -> traced key a
-withEmptyTrace :: Traced traced trace elt =>
+withEmptyTrace :: Trace traced trace elt =>
                   elt a -> traced key a
 withEmptyTrace x = makeTraced x emptyTrace
-extendByZero :: Traced traced trace elt =>
+extendByZero :: Trace traced trace elt =>
                 (elt a -> Double) -> traced key a -> Double
 extendByZero f xt = let (x, t) = getTraced xt in
                     if null $ getTrace t then f x else 0.0
 
 -- Describes how R(A x Trace) should relate to R(A)
-class Traced traced trace elt =>
+class Trace traced trace elt =>
       TDistr tdistr traced trace distr elt |
       distr -> tdistr traced where
   pushForward :: distr a -> tdistr key a
 
 -- We get P(A x Tracing) as `GenFn key (tdistr key) (traced key) a`.
 
--- Describes the transformation tracing from P(A) to P(A x Tracing)
+-- Defines the transformation tracing from P(A) to P(A x Tracing)
 tracing :: (TDistr tdistr traced trace distr elt, Show (elt a)) =>
            GenFn key distr elt a ->
            GenFn key (tdistr key) (traced key) a
@@ -92,14 +88,13 @@ tracing (Semicolon p1 p2) =
 data MyElt a = MyElt { myElt :: a } deriving (Eq, Show)
 data MyTrace key = MyTrace { myTrace :: [(key, TValue)] }
                    deriving (Eq, Show)
-instance Trace MyTrace where
+data MyTraced key a = MyTraced
+  { myTraced :: (MyElt a, MyTrace key) } deriving (Eq, Show)
+instance Trace MyTraced MyTrace MyElt where
   getTrace = myTrace
   emptyTrace = MyTrace []
   kvTrace k v = MyTrace [(k, v)]
   appendTrace t1 t2 = MyTrace (myTrace t1 ++ myTrace t2)
-data MyTraced key a = MyTraced
-  { myTraced :: (MyElt a, MyTrace key) } deriving (Eq, Show)
-instance Traced MyTraced MyTrace MyElt where
   getTraced = myTraced
   makeTraced x t = MyTraced (x, t)
 
