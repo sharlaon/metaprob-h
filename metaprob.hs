@@ -17,7 +17,7 @@
 -- Describes distributions R(f(A)) on elements f(A)
 class Distr distr elt | distr -> elt where
   dirac :: elt a -> distr a
-  convolve :: Eq a => distr a -> (elt a -> distr a) -> distr a
+  convolve :: Eq (elt a) => distr a -> (elt a -> distr a) -> distr a
 
 -- Defines generative functions P(f(A)) in terms of f(A) and R(f(A))
 data GenFn key distr elt a =
@@ -26,7 +26,7 @@ data GenFn key distr elt a =
   Semicolon (GenFn key distr elt a) (elt a -> GenFn key distr elt a)
 
 -- Defines the "Gen" interpretation [[ ]]_g from P(f(A)) to R(f(A))
-runGen :: (Eq a, Distr distr elt) =>
+runGen :: (Eq (elt a), Distr distr elt) =>
           GenFn key distr elt a -> distr a
 runGen (Sample k sample score) = sample
 runGen (Ret e) = dirac e
@@ -44,36 +44,24 @@ class Trace trace where
 -- Describes A x Trace
 class Trace trace =>
       Traced traced trace elt |
-      traced -> trace, traced -> elt where
+      traced -> trace elt where
   getTraced :: traced key a -> (elt a, trace key)
   makeTraced :: elt a -> trace key -> traced key a
-withEmptyTrace :: Traced traced trace elt => elt a -> traced key a
+withEmptyTrace :: Traced traced trace elt =>
+                  elt a -> traced key a
 withEmptyTrace x = makeTraced x emptyTrace
 extendByZero :: Traced traced trace elt =>
                 (elt a -> Double) -> traced key a -> Double
 extendByZero f xt = let (x, t) = getTraced xt in
                     if null $ getTrace t then f x else 0.0
 
--- Describes R(A x Tracing)
+-- Describes how R(A x Trace) should relate to R(A)
 class Traced traced trace elt =>
       TDistr tdistr traced trace distr elt |
-      tdistr -> traced distr,
-      traced -> trace elt,
-      distr -> tdistr elt where
-  -- Needed for runTracing
+      distr -> tdistr traced where
   pushForward :: distr a -> tdistr key a
-  -- Needed for runGen after runTracing
-  tdirac :: traced key a -> tdistr key a
-  tconvolve ::
-    (Eq a, Eq key) =>
-    tdistr key a -> (traced key a -> tdistr key a) -> tdistr key a
-instance (Eq key, TDistr tdistr traced trace distr elt) =>
-         Distr (tdistr key) (traced key) where
-  dirac = tdirac
-  convolve = tconvolve
 
--- We get P(A x Tracing) for free as
--- `GenFn key (tdistr key) (traced key) a`.
+-- We get P(A x Tracing) as `GenFn key (tdistr key) (traced key) a`.
 
 -- Describes the transformation tracing from P(A) to P(A x Tracing)
 tracing :: (TDistr tdistr traced trace distr elt, Show (elt a)) =>
@@ -140,15 +128,16 @@ instance Distr Diracs MyElt where
         (diracs d1)
 data TDiracs key a = TDiracs { tdiracs :: [(MyTraced key a, Double)] }
                      deriving Show
-instance TDistr TDiracs MyTraced MyTrace Diracs MyElt where
-  pushForward =
-    TDiracs . map (\(x, u) -> (makeTraced x emptyTrace, u)) . diracs
-  tdirac xt = TDiracs [(xt, 1.0)]
-  tconvolve d1 d2 = TDiracs . squashDiracs . concat $
+instance Distr (TDiracs key) (MyTraced key) where
+  dirac xt = TDiracs [(xt, 1.0)]
+  convolve d1 d2 = TDiracs . squashDiracs . concat $
     map (\xu -> let (x, u) = xu in
                 map (\yv -> let (y, v) = yv in (y, u * v))
                     (tdiracs $ d2 x))
         (tdiracs d1)
+instance TDistr TDiracs MyTraced MyTrace Diracs MyElt where
+  pushForward =
+    TDiracs . map (\(x, u) -> (makeTraced x emptyTrace, u)) . diracs
   
 --
 -- Infra-example 1:
@@ -182,6 +171,8 @@ computed2 = Semicolon (Semicolon input2 (drunkenNot 1)) (drunkenNot 2)
 -- Meta-example 2: Executing sampling prodedures
 --
 
+-- TODO: hook into a random monad; the sample is deterministic for now
+
 data Sampler a = Sampler { sampler :: () -> a }
 makeSampler :: a -> Sampler a
 makeSampler x = Sampler (\_ -> x)
@@ -199,17 +190,16 @@ tsample :: TSampler key a -> MyTraced key a
 tsample d = tsampler d ()
 instance (Show a, Show key) => Show (TSampler key a) where
   show ts = "() -> " ++ show (tsample ts)
+instance Distr (TSampler key) (MyTraced key) where
+  dirac = makeTSampler
+  convolve s1 s2 = s2 $ tsample s1
 instance TDistr TSampler MyTraced MyTrace Sampler MyElt where
   pushForward s =
     makeTSampler $ MyTraced (MyElt $ sample s, emptyTrace)
-  tdirac = makeTSampler
-  tconvolve s1 s2 = s2 $ tsample s1
 
 --
 -- Infra-example 2:
 --
-
--- TODO: hook into a random monad; the sample is deterministic for now
 
 -- (Recall MySet, myNot from Infra-example 1.)
 
