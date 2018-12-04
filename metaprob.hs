@@ -34,29 +34,29 @@ runGen (Semicolon p1 p2) = convolve (runGen p1) (runGen . p2)
 
 -- Describes the type Trace
 data TValue = TNone String | Intervene String | Observe String
-  deriving (Eq, Show)
-class Tracing1 trace where
+              deriving (Eq, Show)
+class Trace trace where
   getTrace :: trace key -> [(key, TValue)]
   emptyTrace :: trace key
   kvTrace :: key -> TValue -> trace key
   appendTrace :: trace key -> trace key -> trace key
 
 -- Describes A x Trace
-class Tracing1 trace =>
-      Tracing2 traced trace elt |
+class Trace trace =>
+      Traced traced trace elt |
       traced -> trace, traced -> elt where
   getTraced :: traced key a -> (elt a, trace key)
   makeTraced :: elt a -> trace key -> traced key a
-withEmptyTrace :: Tracing2 traced trace elt => elt a -> traced key a
+withEmptyTrace :: Traced traced trace elt => elt a -> traced key a
 withEmptyTrace x = makeTraced x emptyTrace
-extendByZero :: Tracing2 traced trace elt =>
+extendByZero :: Traced traced trace elt =>
                 (elt a -> Double) -> traced key a -> Double
 extendByZero f xt = let (x, t) = getTraced xt in
                     if null $ getTrace t then f x else 0.0
 
 -- Describes R(A x Tracing)
-class Tracing2 traced trace elt =>
-      Tracing3 tdistr traced trace distr elt |
+class Traced traced trace elt =>
+      TDistr tdistr traced trace distr elt |
       tdistr -> traced distr,
       traced -> trace elt,
       distr -> tdistr elt where
@@ -67,7 +67,7 @@ class Tracing2 traced trace elt =>
   tconvolve ::
     (Eq a, Eq key) =>
     tdistr key a -> (traced key a -> tdistr key a) -> tdistr key a
-instance (Eq key, Tracing3 tdistr traced trace distr elt) =>
+instance (Eq key, TDistr tdistr traced trace distr elt) =>
          Distr (tdistr key) (traced key) where
   dirac = tdirac
   convolve = tconvolve
@@ -76,13 +76,13 @@ instance (Eq key, Tracing3 tdistr traced trace distr elt) =>
 -- `GenFn key (tdistr key) (traced key) a`.
 
 -- Describes the transformation tracing from P(A) to P(A x Tracing)
-tracing :: (Tracing3 tdistr traced trace distr elt, Show (elt a)) =>
-           GenFn key distr elt a
-             -> GenFn key (tdistr key) (traced key) a
+tracing :: (TDistr tdistr traced trace distr elt, Show (elt a)) =>
+           GenFn key distr elt a ->
+           GenFn key (tdistr key) (traced key) a
 tracing (Sample k dist score) = Semicolon
   (Sample k (pushForward dist) (extendByZero score))
   (\xt -> let (x, _) = getTraced xt in
-          Ret $ makeTraced x $ kvTrace k $ TNone $ show  x)
+          Ret . (makeTraced x) . (kvTrace k) . TNone . show $ x)
 tracing (Ret x) = Ret $ withEmptyTrace x
 tracing (Semicolon p1 p2) =
   Semicolon
@@ -103,15 +103,15 @@ tracing (Semicolon p1 p2) =
 
 data MyElt a = MyElt { myElt :: a } deriving (Eq, Show)
 data MyTrace key = MyTrace { myTrace :: [(key, TValue)] }
-     deriving (Eq, Show)
-instance Tracing1 MyTrace where
+                   deriving (Eq, Show)
+instance Trace MyTrace where
   getTrace = myTrace
   emptyTrace = MyTrace []
   kvTrace k v = MyTrace [(k, v)]
   appendTrace t1 t2 = MyTrace (myTrace t1 ++ myTrace t2)
 data MyTraced key a = MyTraced
   { myTraced :: (MyElt a, MyTrace key) } deriving (Eq, Show)
-instance Tracing2 MyTraced MyTrace MyElt where
+instance Traced MyTraced MyTrace MyElt where
   getTraced = myTraced
   makeTraced x t = MyTraced (x, t)
 
@@ -123,13 +123,14 @@ instance Tracing2 MyTraced MyTrace MyElt where
 
 squashDiracs :: Eq a => [(a, Double)] -> [(a, Double)]
 squashDiracs [] = []
-squashDiracs ((x,v):xvs) =
+squashDiracs ((x, v) : xvs) =
   let yws = squashDiracs xvs
       hit = filter (\yw -> fst yw == x) yws
       miss = filter (\yw -> fst yw /= x) yws in
-  if null hit then (x, v):yws else (x, v + (snd . head $ hit)):miss
+  if null hit then (x, v) : yws
+              else (x, v + (snd $ head hit)) : miss
 data Diracs a = Diracs { diracs :: [(MyElt a, Double)] }
-     deriving Show
+                deriving Show
 instance Distr Diracs MyElt where
   dirac x = Diracs [(x, 1.0)]
   convolve d1 d2 = Diracs . squashDiracs . concat $
@@ -138,8 +139,8 @@ instance Distr Diracs MyElt where
                     (diracs $ d2 x))
         (diracs d1)
 data TDiracs key a = TDiracs { tdiracs :: [(MyTraced key a, Double)] }
-     deriving Show
-instance Tracing3 TDiracs MyTraced MyTrace Diracs MyElt where
+                     deriving Show
+instance TDistr TDiracs MyTraced MyTrace Diracs MyElt where
   pushForward =
     TDiracs . map (\(x, u) -> (makeTraced x emptyTrace, u)) . diracs
   tdirac xt = TDiracs [(xt, 1.0)]
@@ -161,8 +162,7 @@ myNot Heads = Tails
 input = Ret $ MyElt Tails :: GenFn Integer Diracs MyElt MySet
 input2 = Sample 0
                 (Diracs [(MyElt Tails, 1.0)])
-                (\(MyElt y) -> if y == Tails then 1.0 else 0.0)
-  :: GenFn Integer Diracs MyElt MySet
+                (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
 drunkenNot k (MyElt x) = Sample
   k
   (Diracs [(MyElt $ myNot x, 0.9), (MyElt x, 0.1)])
@@ -188,33 +188,36 @@ makeSampler x = Sampler (\_ -> x)
 sample :: Sampler a -> a
 sample (Sampler s) = s ()
 instance Show a => Show (Sampler a) where
-  show (Sampler s) = "() -> " ++ show (s ())
+  show s = "() -> " ++ show (sample s)
 instance Distr Sampler MyElt where
   dirac = makeSampler . myElt
-  convolve (Sampler s1) s2 = s2 . MyElt . s1 $ ()
+  convolve s1 s2 = s2 $ MyElt (sample s1)
 data TSampler key a = TSampler { tsampler :: () -> MyTraced key a  }
 makeTSampler :: MyTraced key a -> TSampler key a
 makeTSampler x = TSampler (\_ -> x)
 tsample :: TSampler key a -> MyTraced key a
 tsample d = tsampler d ()
 instance (Show a, Show key) => Show (TSampler key a) where
-  show (TSampler ts) = "() -> " ++ (show $ ts ())
-instance Tracing3 TSampler MyTraced MyTrace Sampler MyElt where
-  pushForward (Sampler s) =
-    makeTSampler $ MyTraced (MyElt $ s (), emptyTrace)
+  show ts = "() -> " ++ show (tsample ts)
+instance TDistr TSampler MyTraced MyTrace Sampler MyElt where
+  pushForward s =
+    makeTSampler $ MyTraced (MyElt $ sample s, emptyTrace)
   tdirac = makeTSampler
-  tconvolve (TSampler s1) s2 = s2 . s1 $ ()
+  tconvolve s1 s2 = s2 $ tsample s1
 
 --
 -- Infra-example 2:
 --
 
+-- TODO: hook into a random monad; the sample is deterministic for now
+
+-- (Recall MySet, myNot from Infra-example 1.)
+
 inptt = Ret $ MyElt Tails :: GenFn Integer Sampler MyElt MySet
 inptt2 = Sample 0
                 (makeSampler Tails)
-                (\(MyElt y) -> if y == Tails then 1.0 else 0.0)
-  :: GenFn Integer Sampler MyElt MySet
--- TODO: hook into a random monad; the sample is deterministic for now
+                (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
+-- This is especially not stochastic right now:
 drunkenNtt k (MyElt x) = Sample
   k
   (makeSampler $ myNot x)
