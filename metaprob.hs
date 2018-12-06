@@ -4,7 +4,28 @@
 {-# LANGUAGE UndecidableInstances #-}
 
 --
--- Interface for Metaprob
+-- METAPROB
+--
+
+-- This code consists of two sections.
+--
+-- In the first, we declare the INTERFACE that distributions and
+-- traces are expected to satisfy.  In terms of these data, we define
+-- generative functions, some transformations among them, and the
+-- meta-circular evaluator.
+--
+-- In the second, we give EXAMPLES of an implementation of traces and
+-- two implementations of distributions, one measure-theoretic and one
+-- sampler-theoretic, and some computations.
+
+-- TODOS:
+--   * Probabilistic programs of type "A -> B";
+--     currently just type A ~= "() -> A" is supported
+--   * Stochasticity in "sampling" example using a random monad
+--   * Some notion of continuous distributions
+
+--
+-- INTERFACE
 --
 
 -- Here is some of our notation compared with the Metaprob paper:
@@ -34,9 +55,10 @@ runGen (Semicolon p1 p2) = convolve (runGen p1) (runGen . p2)
 
 data TValue a = TNone String | Intervene a | Observe a
                 deriving (Eq, Show)
--- Describes the types Trace and A x Trace
+-- Describes the types Trace, A x Trace, and A x Trace x R^+
 class Trace wtraced traced trace elt |
-      trace -> wtraced traced elt, traced -> trace, wtraced -> trace where
+      trace -> wtraced traced elt,
+      traced -> trace, wtraced -> trace where
   getTrace :: trace key a -> [(key, TValue (elt a))]
   emptyTrace :: trace key a
   kvTrace :: key -> TValue (elt a) -> trace key a
@@ -56,26 +78,29 @@ extendByZero f xt = let (x, t) = getTraced xt in
 extendByZeroW :: Trace wtraced traced trace elt =>
                  (elt a -> Double) -> wtraced key a -> Double
 extendByZeroW f xtw = let (x, t, _) = getWTraced xtw in
-                     if null $ getTrace t then f x else 0.0
+                      if null $ getTrace t then f x else 0.0
 
--- Describes how R(A x Trace) should relate to R(A)
+-- Relates R(A x Trace) and R(A x Trace x R^+) to R(A)
 class Trace wtraced traced trace elt =>
       TDistr wtdistr wtraced tdistr traced trace distr elt |
       distr -> wtdistr wtraced tdistr traced where
   pushForward :: distr a -> tdistr key a
   pushForwardW :: distr a -> wtdistr key a
 
--- We get P(A x Tracing) as `GenFn key (tdistr key) (traced key) a`.
+-- Then P(A x Tracing) is `GenFn key (tdistr key) (traced key) a` and
+-- P(A x Tracing x R^+) is `GenFn key (wtdistr key) (wtraced key) a`,
+-- and we may use the next two functions to make elements of them.
 
 -- Defines the transformation tracing from P(A) to P(A x Tracing)
 tracing :: (TDistr wtdistr wtraced tdistr traced trace distr elt,
             Show (elt a)) =>
            GenFn key distr elt a ->
            GenFn key (tdistr key) (traced key) a
-tracing (Sample k dist score) = Semicolon
-  (Sample k (pushForward dist) (extendByZero score))
-  (\xt -> let (x, _) = getTraced xt in
-          Ret $ makeTraced x (kvTrace k (TNone $ show x)))
+tracing (Sample k dist score) =
+  Semicolon
+    (Sample k (pushForward dist) (extendByZero score))
+    (\xt -> let (x, _) = getTraced xt in
+            Ret $ makeTraced x (kvTrace k (TNone $ show x)))
 tracing (Ret x) = Ret $ makeTraced x emptyTrace
 tracing (Semicolon p1 p2) =
   Semicolon
@@ -94,12 +119,13 @@ infer :: (TDistr wtdistr wtraced tdistr traced trace distr elt,
 infer t (Sample k dist score) =
   Semicolon
     (case traceValue t k of
-      Observe x -> Ret $ makeWTraced x emptyTrace (score x)
-      Intervene x -> Ret $ makeWTraced x emptyTrace 1.0
-      TNone _ -> Semicolon
-        (Sample k (pushForwardW dist) (extendByZeroW score))
-        (\xsv -> let (x, _, _) = getWTraced xsv in
-                 Ret $ makeWTraced x emptyTrace 1.0))
+       Observe x -> Ret $ makeWTraced x emptyTrace (score x)
+       Intervene x -> Ret $ makeWTraced x emptyTrace 1.0
+       TNone _ ->
+         Semicolon
+           (Sample k (pushForwardW dist) (extendByZeroW score))
+           (\xsv -> let (x, _, _) = getWTraced xsv in
+                    Ret $ makeWTraced x emptyTrace 1.0))
     (\ytw -> let (y, _, w) = getWTraced ytw in
              Ret $ makeWTraced y (kvTrace k (TNone $ show y)) w)
 infer t (Ret x) = Ret $ makeWTraced x emptyTrace 1.0
@@ -113,7 +139,7 @@ infer t (Semicolon p1 p2) =
                         Ret $ makeWTraced y (appendTrace s t) (v * w)))
 
 --
--- Examples
+-- EXAMPLES
 --
 
 --
@@ -123,20 +149,23 @@ infer t (Semicolon p1 p2) =
 data MyElt a = MyElt { myElt :: a } deriving Eq
 instance Show a => Show (MyElt a) where
   show (MyElt a) = "MyElt " ++ show a
+
 data MyTrace key a = MyTrace { myTrace :: [(key, TValue (MyElt a))] }
                      deriving Eq
 instance (Show key, Show a) => Show (MyTrace key a) where
   show (MyTrace t) = "MyTrace " ++ show t
+
 data MyTraced key a =
-  MyTraced { myTraced :: (MyElt a, MyTrace key a) }
-  deriving Eq
+     MyTraced { myTraced :: (MyElt a, MyTrace key a) }  deriving Eq
 instance (Show key, Show a) => Show (MyTraced key a) where
   show (MyTraced xt) = "MyTraced " ++ show xt
+
 data MyWTraced key a =
-  MyWTraced { myWTraced :: (MyElt a, MyTrace key a, Double) }
-  deriving Eq
+     MyWTraced { myWTraced :: (MyElt a, MyTrace key a, Double) }
+     deriving Eq
 instance (Show key, Show a) => Show (MyWTraced key a) where
   show (MyWTraced xtw) = "MyWTrace " ++ show xtw
+
 instance Trace MyWTraced MyTraced MyTrace MyElt where
   getTrace = myTrace
   emptyTrace = MyTrace []
@@ -150,6 +179,9 @@ instance Trace MyWTraced MyTraced MyTrace MyElt where
 data MySet = Tails | Heads deriving (Show, Eq)
 myNot Tails = Heads
 myNot Heads = Tails
+
+tObs = MyTrace [(0, Observe (MyElt Heads))]
+tInt = MyTrace [(0, Intervene (MyElt Heads))]
 
 --
 -- Meta-example 1:
@@ -200,7 +232,9 @@ instance Distr (WTDiracs key) (MyWTraced key) where
                     (wtdiracs $ d2 x))
         (wtdiracs d1)
 
-instance TDistr WTDiracs MyWTraced TDiracs MyTraced MyTrace Diracs MyElt where
+instance TDistr
+         WTDiracs MyWTraced TDiracs MyTraced MyTrace Diracs MyElt
+         where
   pushForward =
     TDiracs . map (\(x, u) -> (makeTraced x emptyTrace, u)) . diracs
   pushForwardW =
@@ -215,16 +249,14 @@ input = Ret $ MyElt Tails :: GenFn Integer Diracs MyElt MySet
 input2 = Sample 0
                 (Diracs [(MyElt Tails, 1.0)])
                 (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
-drunkenNot k (MyElt x) = Sample
-  k
-  (Diracs [(MyElt $ myNot x, 0.9), (MyElt x, 0.1)])
-  (\(MyElt y) ->
-     if y == x then 0.1 else if y == myNot x then 0.9 else 0)
+drunkenNot k (MyElt x) =
+  Sample
+    k
+    (Diracs [(MyElt $ myNot x, 0.9), (MyElt x, 0.1)])
+    (\(MyElt y) ->
+       if y == x then 0.1 else if y == myNot x then 0.9 else 0)
 computed = Semicolon (Semicolon input (drunkenNot 1)) (drunkenNot 2)
 computed2 = Semicolon (Semicolon input2 (drunkenNot 1)) (drunkenNot 2)
-
-tObs = MyTrace [(0,Observe (MyElt Heads))]
-tInt = MyTrace [(0,Intervene (MyElt Heads))]
 
 -- try:
 -- runGen computed
@@ -262,7 +294,8 @@ instance Distr (TSampler key) (MyTraced key) where
   dirac = makeTSampler
   convolve s1 s2 = s2 $ tsample s1
 
-data WTSampler key a = WTSampler { wtsampler :: () -> MyWTraced key a  }
+data WTSampler key a =
+     WTSampler { wtsampler :: () -> MyWTraced key a  }
 makeWTSampler :: MyWTraced key a -> WTSampler key a
 makeWTSampler x = WTSampler (\_ -> x)
 wtsample :: WTSampler key a -> MyWTraced key a
@@ -285,18 +318,17 @@ instance TDistr
 -- Infra-example 2:
 --
 
--- (Recall MySet, myNot from Infra-example 1.)
-
 inptt = Ret $ MyElt Tails :: GenFn Integer Sampler MyElt MySet
 inptt2 = Sample 0
                 (makeSampler Tails)
                 (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
 -- This is especially not stochastic right now:
-drunkenNtt k (MyElt x) = Sample
-  k
-  (makeSampler $ myNot x)
-  (\(MyElt y) ->
-     if y == x then 0.1 else if y == myNot x then 0.9 else 0)
+drunkenNtt k (MyElt x) =
+  Sample
+    k
+    (makeSampler $ myNot x)
+    (\(MyElt y) ->
+       if y == x then 0.1 else if y == myNot x then 0.9 else 0)
 comptted = Semicolon (Semicolon inptt (drunkenNtt 1)) (drunkenNtt 2)
 comptted2 = Semicolon (Semicolon inptt2 (drunkenNtt 1)) (drunkenNtt 2)
 
