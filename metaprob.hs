@@ -45,15 +45,19 @@ data GenFn key distr elt a =
   Semicolon (GenFn key distr elt a) (elt a -> GenFn key distr elt a)
 
 -- Defines the "Gen" interpretation [[ ]]_g from P(f(A)) to R(f(A))
-runGen :: (Eq (elt a), Distr distr elt) =>
+runGen :: (Distr distr elt, Eq (elt a)) =>
           GenFn key distr elt a -> distr a
 runGen (Sample k sample score) = sample
 runGen (Ret e) = dirac e
 runGen (Semicolon p1 p2) = convolve (runGen p1) (runGen . p2)
 
--- Describes the types Trace, A x Trace, and A x Trace x R^+
 data TValue a = TNone String | Intervene a | Observe a
                 deriving (Eq, Show)
+-- In the context of `class Trace`,
+--   * `elt a` corresponds to f(A) = A,
+--   * `traced a` corresponds to f(A) = A x Trace, and
+--   * `wtraced a` corresponds to f(A) = A x Trace x R^+.
+-- And, yes, `trace` corresponds to Trace.
 class Trace trace key elt traced wtraced |
       trace -> key elt traced wtraced,
       traced -> trace, wtraced -> traced where
@@ -112,7 +116,7 @@ tracing (Semicolon p1 p2) =
 -- Defines the transformation infer_t from P(A) to P(A x Tracing x R^+)
 infer :: (Trace trace key elt traced wtraced,
           TDistr distr tdistr wtdistr,
-          Show (elt a), Eq key) =>
+          Eq key, Show (elt a)) =>
          trace a -> GenFn key distr elt a ->
          GenFn key wtdistr wtraced a
 infer t (Sample k dist score) =
