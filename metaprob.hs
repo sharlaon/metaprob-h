@@ -1,7 +1,5 @@
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE UndecidableInstances #-}
 
 --
 -- METAPROB
@@ -53,55 +51,55 @@ runGen (Sample k sample score) = sample
 runGen (Ret e) = dirac e
 runGen (Semicolon p1 p2) = convolve (runGen p1) (runGen . p2)
 
+-- Describes the types Trace, A x Trace, and A x Trace x R^+
 data TValue a = TNone String | Intervene a | Observe a
                 deriving (Eq, Show)
--- Describes the types Trace, A x Trace, and A x Trace x R^+
-class Trace wtraced traced trace elt |
-      trace -> wtraced traced elt,
-      traced -> trace, wtraced -> trace where
-  getTrace :: trace key a -> [(key, TValue (elt a))]
-  emptyTrace :: trace key a
-  kvTrace :: key -> TValue (elt a) -> trace key a
-  appendTrace :: trace key a -> trace key a -> trace key a
-  getTraced :: traced key a -> (elt a, trace key a)
-  makeTraced :: elt a -> trace key a -> traced key a
-  getWTraced :: wtraced key a -> (elt a, trace key a, Double)
-  makeWTraced :: elt a -> trace key a -> Double -> wtraced key a
-traceValue :: (Trace wtraced traced trace elt, Eq key) =>
-              trace key a -> key -> TValue (elt a)
+class Trace trace key elt traced wtraced |
+      trace -> key elt traced wtraced,
+      traced -> trace, wtraced -> traced where
+  getTrace :: trace a -> [(key, TValue (elt a))]
+  emptyTrace :: trace a
+  kvTrace :: key -> TValue (elt a) -> trace a
+  appendTrace :: trace a -> trace a -> trace a
+  getTraced :: traced a -> (elt a, trace a)
+  makeTraced :: (elt a, trace a) -> traced a
+  getWTraced :: wtraced a -> (elt a, trace a, Double)
+  makeWTraced :: (elt a, trace a, Double) -> wtraced a
+traceValue :: (Trace trace key elt traced wtraced, Eq key) =>
+              trace a -> key -> TValue (elt a)
 traceValue t k = let res = filter (\(k', v) -> k' == k) (getTrace t) in
                  if null res then TNone "" else snd $ head res
-extendByZero :: Trace wtraced traced trace elt =>
-                (elt a -> Double) -> traced key a -> Double
+extendByZero :: Trace trace key elt traced wtraced =>
+                (elt a -> Double) -> traced a -> Double
 extendByZero f xt = let (x, t) = getTraced xt in
                     if null $ getTrace t then f x else 0.0
-extendByZeroW :: Trace wtraced traced trace elt =>
-                 (elt a -> Double) -> wtraced key a -> Double
+extendByZeroW :: Trace trace key elt traced wtraced =>
+                 (elt a -> Double) -> wtraced a -> Double
 extendByZeroW f xtw = let (x, t, _) = getWTraced xtw in
                       if null $ getTrace t then f x else 0.0
 
--- Relates R(A x Trace) and R(A x Trace x R^+) to R(A)
-class Trace wtraced traced trace elt =>
-      TDistr wtdistr wtraced tdistr traced trace distr elt |
-      distr -> wtdistr wtraced tdistr traced where
-  pushForward :: distr a -> tdistr key a
-  pushForwardW :: distr a -> wtdistr key a
+-- Relates R(A) to R(A x Trace) and R(A x Trace x R^+)
+class TDistr distr tdistr wtdistr |
+      distr -> wtdistr tdistr where
+  pushForward :: distr a -> tdistr a
+  pushForwardW :: distr a -> wtdistr a
 
--- Then P(A x Tracing) is `GenFn key (tdistr key) (traced key) a` and
--- P(A x Tracing x R^+) is `GenFn key (wtdistr key) (wtraced key) a`,
+-- Then P(A x Tracing) is `GenFn key tdistr traced a` and
+-- P(A x Tracing x R^+) is `GenFn key wtdistr wtraced a`,
 -- and we may use the next two functions to make elements of them.
 
 -- Defines the transformation tracing from P(A) to P(A x Tracing)
-tracing :: (TDistr wtdistr wtraced tdistr traced trace distr elt,
+tracing :: (Trace trace key elt traced wtraced,
+            TDistr distr tdistr wtdistr,
             Show (elt a)) =>
            GenFn key distr elt a ->
-           GenFn key (tdistr key) (traced key) a
+           GenFn key tdistr traced a
 tracing (Sample k dist score) =
   Semicolon
     (Sample k (pushForward dist) (extendByZero score))
     (\xt -> let (x, _) = getTraced xt in
-            Ret $ makeTraced x (kvTrace k (TNone $ show x)))
-tracing (Ret x) = Ret $ makeTraced x emptyTrace
+            Ret $ makeTraced (x, kvTrace k (TNone $ show x)))
+tracing (Ret x) = Ret $ makeTraced (x, emptyTrace)
 tracing (Semicolon p1 p2) =
   Semicolon
     (tracing p1)
@@ -109,26 +107,27 @@ tracing (Semicolon p1 p2) =
             Semicolon
               (tracing (p2 x))
               (\yt -> let (y, t) = getTraced yt in
-                      Ret $ makeTraced y (appendTrace s t)))
+                      Ret $ makeTraced (y, appendTrace s t)))
 
 -- Defines the transformation infer_t from P(A) to P(A x Tracing x R^+)
-infer :: (TDistr wtdistr wtraced tdistr traced trace distr elt,
+infer :: (Trace trace key elt traced wtraced,
+          TDistr distr tdistr wtdistr,
           Show (elt a), Eq key) =>
-         trace key a -> GenFn key distr elt a ->
-         GenFn key (wtdistr key) (wtraced key) a
+         trace a -> GenFn key distr elt a ->
+         GenFn key wtdistr wtraced a
 infer t (Sample k dist score) =
   Semicolon
     (case traceValue t k of
-       Observe x -> Ret $ makeWTraced x emptyTrace (score x)
-       Intervene x -> Ret $ makeWTraced x emptyTrace 1.0
+       Observe x -> Ret $ makeWTraced (x, emptyTrace, score x)
+       Intervene x -> Ret $ makeWTraced (x, emptyTrace, 1.0)
        TNone _ ->
          Semicolon
            (Sample k (pushForwardW dist) (extendByZeroW score))
-           (\xsv -> let (x, _, _) = getWTraced xsv in
-                    Ret $ makeWTraced x emptyTrace 1.0))
+           (\xtw -> let (x, _, _) = getWTraced xtw in
+                    Ret $ makeWTraced (x, emptyTrace, 1.0)))
     (\ytw -> let (y, _, w) = getWTraced ytw in
-             Ret $ makeWTraced y (kvTrace k (TNone $ show y)) w)
-infer t (Ret x) = Ret $ makeWTraced x emptyTrace 1.0
+             Ret $ makeWTraced (y, kvTrace k (TNone $ show y), w))
+infer t (Ret x) = Ret $ makeWTraced (x, emptyTrace, 1.0)
 infer t (Semicolon p1 p2) =
   Semicolon
     (infer t p1)
@@ -136,7 +135,7 @@ infer t (Semicolon p1 p2) =
              Semicolon
                (infer t (p2 x))
                (\ytw -> let (y, t, w) = getWTraced ytw in
-                        Ret $ makeWTraced y (appendTrace s t) (v * w)))
+                        Ret $ makeWTraced (y, appendTrace s t, (v * w))))
 
 --
 -- EXAMPLES
@@ -148,33 +147,35 @@ infer t (Semicolon p1 p2) =
 
 data MyElt a = MyElt { myElt :: a } deriving Eq
 instance Show a => Show (MyElt a) where
-  show (MyElt a) = "MyElt " ++ show a
+  show (MyElt a) = show a
 
-data MyTrace key a = MyTrace { myTrace :: [(key, TValue (MyElt a))] }
-                     deriving Eq
+data MyTrace key a =
+  MyTrace { myTrace :: [(key, TValue (MyElt a))] }
+  deriving Eq
 instance (Show key, Show a) => Show (MyTrace key a) where
-  show (MyTrace t) = "MyTrace " ++ show t
+  show (MyTrace t) = "Trace " ++ show t
 
 data MyTraced key a =
-     MyTraced { myTraced :: (MyElt a, MyTrace key a) }  deriving Eq
+  MyTraced { myTraced :: (MyElt a, MyTrace key a) }
+  deriving Eq
 instance (Show key, Show a) => Show (MyTraced key a) where
-  show (MyTraced xt) = "MyTraced " ++ show xt
+  show (MyTraced (MyElt x, MyTrace t)) = show (x, t)
 
 data MyWTraced key a =
-     MyWTraced { myWTraced :: (MyElt a, MyTrace key a, Double) }
-     deriving Eq
+  MyWTraced { myWTraced :: (MyElt a, MyTrace key a, Double) }
+  deriving Eq
 instance (Show key, Show a) => Show (MyWTraced key a) where
-  show (MyWTraced xtw) = "MyWTrace " ++ show xtw
+  show (MyWTraced (MyElt x, MyTrace t, w)) = show (x, t, w)
 
-instance Trace MyWTraced MyTraced MyTrace MyElt where
+instance Trace (MyTrace key) key MyElt (MyTraced key) (MyWTraced key) where
   getTrace = myTrace
   emptyTrace = MyTrace []
   kvTrace k v = MyTrace [(k, v)]
   appendTrace t1 t2 = MyTrace (myTrace t1 ++ myTrace t2)
   getTraced = myTraced
-  makeTraced x t = MyTraced (x, t)
+  makeTraced = MyTraced
   getWTraced = myWTraced
-  makeWTraced x t w = MyWTraced (x, t, w)
+  makeWTraced = MyWTraced
 
 data MySet = Tails | Heads deriving (Show, Eq)
 myNot Tails = Heads
@@ -198,10 +199,10 @@ squashDiracs ((x, v) : xvs) =
   if null hit then (x, v) : yws
               else (x, v + (snd $ head hit)) : miss
 
-data Diracs a = Diracs { diracs :: [(MyElt a, Double)] }
-instance (Show a) => Show (Diracs a) where
-  show (Diracs d) = "Diracs" ++ concat (map (\l -> "\n  " ++ show l) d)
-instance Distr Diracs MyElt where
+data Diracs elt a = Diracs { diracs :: [(elt a, Double)] }
+instance Show (elt a) => Show (Diracs elt a) where
+  show (Diracs d) = "Diracs" ++ concat (map (\l -> "\n " ++ show l) d)
+instance Distr (Diracs elt) elt where
   dirac x = Diracs [(x, 1.0)]
   convolve d1 d2 = Diracs . squashDiracs . concat $
     map (\xu -> let (x, u) = xu in
@@ -209,44 +210,21 @@ instance Distr Diracs MyElt where
                     (diracs $ d2 x))
         (diracs d1)
 
-data TDiracs key a = TDiracs { tdiracs :: [(MyTraced key a, Double)] }
-instance (Show key, Show a) => Show (TDiracs key a) where
-  show (TDiracs d) = "TDiracs" ++ concat (map (\l -> "\n  " ++ show l) d)
-instance Distr (TDiracs key) (MyTraced key) where
-  dirac xt = TDiracs [(xt, 1.0)]
-  convolve d1 d2 = TDiracs . squashDiracs . concat $
-    map (\xu -> let (x, u) = xu in
-                map (\yv -> let (y, v) = yv in (y, u * v))
-                    (tdiracs $ d2 x))
-        (tdiracs d1)
-
-data WTDiracs key a =
-  WTDiracs { wtdiracs :: [(MyWTraced key a, Double)] }
-instance (Show key, Show a) => Show (WTDiracs key a) where
-  show (WTDiracs d) = "WTDiracs" ++ concat (map (\l -> "\n  " ++ show l) d)
-instance Distr (WTDiracs key) (MyWTraced key) where
-  dirac xtw = WTDiracs [(xtw, 1.0)]
-  convolve d1 d2 = WTDiracs . squashDiracs . concat $
-    map (\xu -> let (x, u) = xu in
-                map (\yv -> let (y, v) = yv in (y, u * v))
-                    (wtdiracs $ d2 x))
-        (wtdiracs d1)
-
-instance TDistr
-         WTDiracs MyWTraced TDiracs MyTraced MyTrace Diracs MyElt
-         where
-  pushForward =
-    TDiracs . map (\(x, u) -> (makeTraced x emptyTrace, u)) . diracs
-  pushForwardW =
-    WTDiracs . map (\(x, u) -> (makeWTraced x emptyTrace 1.0, u)) . diracs
+instance TDistr (Diracs MyElt)
+                (Diracs (MyTraced Int))
+                (Diracs (MyWTraced Int)) where
+  pushForward (Diracs d) =
+    Diracs $ map (\(x, u) -> (makeTraced (x, emptyTrace), u)) d
+  pushForwardW (Diracs d)=
+    Diracs $ map (\(x, u) -> (makeWTraced (x, emptyTrace, 1.0), u)) d
 
 --
 -- Infra-example 1:
 -- All the unknown random state consists of a single coin toss outcome.
 --
 
-input = Ret $ MyElt Tails :: GenFn Integer Diracs MyElt MySet
-input2 = Sample 0
+input = Ret $ MyElt Tails :: GenFn Int (Diracs MyElt) MyElt MySet
+input2 = Sample (0 :: Int)
                 (Diracs [(MyElt Tails, 1.0)])
                 (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
 drunkenNot k (MyElt x) =
@@ -272,61 +250,38 @@ computed2 = Semicolon (Semicolon input2 (drunkenNot 1)) (drunkenNot 2)
 
 -- TODO: hook into a random monad; the sample is deterministic for now
 
-data Sampler a = Sampler { sampler :: () -> a }
-makeSampler :: a -> Sampler a
+data Sampler elt a = Sampler { sampler :: () -> elt a }
+makeSampler :: elt a -> Sampler elt a
 makeSampler x = Sampler (\_ -> x)
-sample :: Sampler a -> a
+sample :: Sampler elt a -> elt a
 sample (Sampler s) = s ()
-instance Show a => Show (Sampler a) where
+instance Show (elt a) => Show (Sampler elt a) where
   show s = "() -> " ++ show (sample s)
-instance Distr Sampler MyElt where
-  dirac = makeSampler . myElt
-  convolve s1 s2 = s2 $ MyElt (sample s1)
+instance Distr (Sampler elt) elt where
+  dirac = makeSampler
+  convolve s1 s2 = s2 $ sample s1
 
-data TSampler key a = TSampler { tsampler :: () -> MyTraced key a  }
-makeTSampler :: MyTraced key a -> TSampler key a
-makeTSampler x = TSampler (\_ -> x)
-tsample :: TSampler key a -> MyTraced key a
-tsample d = tsampler d ()
-instance (Show a, Show key) => Show (TSampler key a) where
-  show ts = "() -> " ++ show (tsample ts)
-instance Distr (TSampler key) (MyTraced key) where
-  dirac = makeTSampler
-  convolve s1 s2 = s2 $ tsample s1
-
-data WTSampler key a =
-     WTSampler { wtsampler :: () -> MyWTraced key a  }
-makeWTSampler :: MyWTraced key a -> WTSampler key a
-makeWTSampler x = WTSampler (\_ -> x)
-wtsample :: WTSampler key a -> MyWTraced key a
-wtsample d = wtsampler d ()
-instance (Show a, Show key) => Show (WTSampler key a) where
-  show ts = "() -> " ++ show (wtsample ts)
-instance Distr (WTSampler key) (MyWTraced key) where
-  dirac = makeWTSampler
-  convolve s1 s2 = s2 $ wtsample s1
-
-instance TDistr
-         WTSampler MyWTraced TSampler MyTraced MyTrace Sampler MyElt
-         where
+instance TDistr (Sampler MyElt)
+                (Sampler (MyTraced Int))
+                (Sampler (MyWTraced Int)) where
   pushForward s =
-    makeTSampler $ MyTraced (MyElt $ sample s, emptyTrace)
+    makeSampler $ MyTraced (sample s, emptyTrace)
   pushForwardW s =
-    makeWTSampler $ MyWTraced (MyElt $ sample s, emptyTrace, 1.0)
+    makeSampler $ MyWTraced (sample s, emptyTrace, 1.0)
 
 --
 -- Infra-example 2:
 --
 
-inptt = Ret $ MyElt Tails :: GenFn Integer Sampler MyElt MySet
-inptt2 = Sample 0
-                (makeSampler Tails)
+inptt = Ret $ MyElt Tails :: GenFn Int (Sampler MyElt) MyElt MySet
+inptt2 = Sample (0 :: Int)
+                (makeSampler $ MyElt Tails)
                 (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
 -- This is especially not stochastic right now:
 drunkenNtt k (MyElt x) =
   Sample
     k
-    (makeSampler $ myNot x)
+    (makeSampler . MyElt $ myNot x)
     (\(MyElt y) ->
        if y == x then 0.1 else if y == myNot x then 0.9 else 0)
 comptted = Semicolon (Semicolon inptt (drunkenNtt 1)) (drunkenNtt 2)
