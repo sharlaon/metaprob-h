@@ -51,7 +51,7 @@ runGen (Sample k sample score) = sample
 runGen (Ret e) = dirac e
 runGen (Semicolon p1 p2) = convolve (runGen p1) (runGen . p2)
 
-data TValue a = TNone String | Intervene a | Observe a
+data TValue a = TNone | Traced a | Intervene a | Observe a
                 deriving (Eq, Show)
 -- In the context of `class Trace`,
 --   * `elt a` corresponds to f(A) = A,
@@ -72,7 +72,7 @@ class Trace trace key elt traced wtraced |
 traceValue :: (Trace trace key elt traced wtraced, Eq key) =>
               trace a -> key -> TValue (elt a)
 traceValue t k = let res = filter ((== k) . fst) (getTrace t) in
-                 if null res then TNone "" else snd $ head res
+                 if null res then TNone else snd $ head res
 extendByZero :: Trace trace key elt traced wtraced =>
                 (elt a -> Double) -> traced a -> Double
 extendByZero f xt = let (x, t) = getTraced xt in
@@ -94,15 +94,14 @@ class TDistr distr tdistr wtdistr |
 
 -- Defines the transformation tracing from P(A) to P(A x Tracing)
 tracing :: (Trace trace key elt traced wtraced,
-            TDistr distr tdistr wtdistr,
-            Show (elt a)) =>
+            TDistr distr tdistr wtdistr) =>
            GenFn key distr elt a ->
            GenFn key tdistr traced a
 tracing (Sample k dist score) =
   Semicolon
     (Sample k (pushForward dist) (extendByZero score))
     (\xt -> let (x, _) = getTraced xt in
-            Ret $ makeTraced (x, kvTrace k (TNone $ show x)))
+            Ret $ makeTraced (x, kvTrace k (Traced x)))
 tracing (Ret x) = Ret $ makeTraced (x, emptyTrace)
 tracing (Semicolon p1 p2) =
   Semicolon
@@ -116,7 +115,7 @@ tracing (Semicolon p1 p2) =
 -- Defines infer_t from P(A) to P(A x Tracing x R^+)
 infer :: (Trace trace key elt traced wtraced,
           TDistr distr tdistr wtdistr,
-          Eq key, Show (elt a)) =>
+          Eq key) =>
          trace a -> GenFn key distr elt a ->
          GenFn key wtdistr wtraced a
 infer t (Sample k dist score) =
@@ -124,13 +123,13 @@ infer t (Sample k dist score) =
     (case traceValue t k of
        Observe x -> Ret $ makeWTraced (x, emptyTrace, score x)
        Intervene x -> Ret $ makeWTraced (x, emptyTrace, 1.0)
-       TNone _ ->
+       _ ->
          Semicolon
            (Sample k (pushForwardW dist) (extendByZeroW score))
            (\xtw -> let (x, _, _) = getWTraced xtw in
                     Ret $ makeWTraced (x, emptyTrace, 1.0)))
     (\ytw -> let (y, _, w) = getWTraced ytw in
-             Ret $ makeWTraced (y, kvTrace k (TNone $ show y), w))
+             Ret $ makeWTraced (y, kvTrace k (Traced y), w))
 infer t (Ret x) = Ret $ makeWTraced (x, emptyTrace, 1.0)
 infer t (Semicolon p1 p2) =
   Semicolon
