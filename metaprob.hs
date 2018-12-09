@@ -71,7 +71,7 @@ class Trace trace key elt traced wtraced |
   makeWTraced :: (elt a, trace a, Double) -> wtraced a
 traceValue :: (Trace trace key elt traced wtraced, Eq key) =>
               trace a -> key -> TValue (elt a)
-traceValue t k = let res = filter (\(k', v) -> k' == k) (getTrace t) in
+traceValue t k = let res = filter ((== k) . fst) (getTrace t) in
                  if null res then TNone "" else snd $ head res
 extendByZero :: Trace trace key elt traced wtraced =>
                 (elt a -> Double) -> traced a -> Double
@@ -113,7 +113,7 @@ tracing (Semicolon p1 p2) =
               (\yt -> let (y, t) = getTraced yt in
                       Ret $ makeTraced (y, appendTrace s t)))
 
--- Defines the transformation infer_t from P(A) to P(A x Tracing x R^+)
+-- Defines infer_t from P(A) to P(A x Tracing x R^+)
 infer :: (Trace trace key elt traced wtraced,
           TDistr distr tdistr wtdistr,
           Eq key, Show (elt a)) =>
@@ -139,7 +139,8 @@ infer t (Semicolon p1 p2) =
              Semicolon
                (infer t (p2 x))
                (\ytw -> let (y, t, w) = getWTraced ytw in
-                        Ret $ makeWTraced (y, appendTrace s t, (v * w))))
+                        Ret $ makeWTraced
+                                (y, appendTrace s t, (v * w))))
 
 --
 -- EXAMPLES
@@ -171,7 +172,11 @@ data MyWTraced key a =
 instance (Show key, Show a) => Show (MyWTraced key a) where
   show (MyWTraced (MyElt x, MyTrace t, w)) = show (x, t, w)
 
-instance Trace (MyTrace key) key MyElt (MyTraced key) (MyWTraced key) where
+instance Trace (MyTrace key)
+               key
+               MyElt
+               (MyTraced key)
+               (MyWTraced key) where
   getTrace = myTrace
   emptyTrace = MyTrace []
   kvTrace k v = MyTrace [(k, v)]
@@ -185,8 +190,8 @@ data MySet = Tails | Heads deriving (Show, Eq)
 myNot Tails = Heads
 myNot Heads = Tails
 
-tObs = MyTrace [(0, Observe (MyElt Heads))]
-tInt = MyTrace [(0, Intervene (MyElt Heads))]
+tObs = MyTrace [(0 :: Int, Observe (MyElt Heads))]
+tInt = MyTrace [(0 :: Int, Intervene (MyElt Heads))]
 
 --
 -- Meta-example 1:
