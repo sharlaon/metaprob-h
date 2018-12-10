@@ -118,9 +118,9 @@ infer :: (Trace trace key elt traced wtraced,
           Eq key) =>
          trace a -> GenFn key distr elt a ->
          GenFn key wtdistr wtraced a
-infer t (Sample k dist score) =
+infer tr (Sample k dist score) =
   Semicolon
-    (case traceValue t k of
+    (case traceValue tr k of
        Observe x -> Ret $ makeWTraced (x, emptyTrace, score x)
        Intervene x -> Ret $ makeWTraced (x, emptyTrace, 1.0)
        _ ->
@@ -130,13 +130,13 @@ infer t (Sample k dist score) =
                     Ret $ makeWTraced (x, emptyTrace, 1.0)))
     (\ytw -> let (y, _, w) = getWTraced ytw in
              Ret $ makeWTraced (y, kvTrace k (Traced y), w))
-infer t (Ret x) = Ret $ makeWTraced (x, emptyTrace, 1.0)
-infer t (Semicolon p1 p2) =
+infer tr (Ret x) = Ret $ makeWTraced (x, emptyTrace, 1.0)
+infer tr (Semicolon p1 p2) =
   Semicolon
-    (infer t p1)
+    (infer tr p1)
     (\xsv -> let (x, s, v) = getWTraced xsv in
              Semicolon
-               (infer t (p2 x))
+               (infer tr (p2 x))
                (\ytw -> let (y, t, w) = getWTraced ytw in
                         Ret $ makeWTraced
                                 (y, appendTrace s t, (v * w))))
