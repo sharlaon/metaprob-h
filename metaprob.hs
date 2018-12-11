@@ -7,16 +7,23 @@ import Control.Monad.Random
 -- METAPROB
 --
 
--- This code consists of two sections.
---
--- In the first, we declare the INTERFACE that distributions and
--- traces are expected to satisfy.  In terms of these data, we define
--- generative functions, some transformations among them, and the
+-- The first section this code, INTERFACE, shows how Metaprob rests
+-- atop an abstract theory of distributions (and traces).  It
+-- clarifies which aspects of distributions are required to define
+-- generative functions, the key transformations among them, and the
 -- meta-circular evaluator.
 --
--- In the second, we give EXAMPLES of an implementation of traces and
--- two implementations of distributions, one measure-theoretic and one
--- sampler-theoretic, and some computations.
+-- The second section, EXAMPLES, provides implementations of the
+-- interface.  Our implementations of distributions include both
+-- measure-theoretic and sampler-theoretic ones.  We set up some
+-- sample computations too.
+--
+-- In all cases, the goal is conceptual clarity, ignoring
+-- computational efficiency.
+
+-- This file is intended to be loaded in ghci via ":l metaprob.hs"
+-- followed by the suggestions under the "try:" comments in the
+-- examples below.
 
 -- TODOS:
 --   * Probabilistic programs of type "A -> B";
@@ -31,11 +38,15 @@ import Control.Monad.Random
 -- Here is some of our notation compared with the Metaprob paper:
 --   * The space K of trace keys is represented by `key`.
 --   * The type A of elements we wish to compute about is `a`.
+--     We assume that A is essentially a finite discrete set,
+--     though the code might sometimes work more generally.
 --   * We fix some parametric type f(A) in the world of the paper.
 --     * Key examples: f(A) = A, and f(A) = A x Trace.
 -- The rest of the correspondence is documented as we go.
 
 -- Describes distributions R(f(A)) on elements f(A)
+-- (Note that if `elt a` were just `a`, then we would be describing
+-- none other than a monad here.)
 class Distr distr elt | distr -> elt where
   dirac :: elt a -> distr a
   convolve :: Eq (elt a) => distr a -> (elt a -> distr a) -> distr a
@@ -92,9 +103,10 @@ class TDistr distr tdistr wtdistr |
 
 -- Then P(A x Tracing) is `GenFn key tdistr traced a` and
 -- P(A x Tracing x R^+) is `GenFn key wtdistr wtraced a`,
--- and we may use the next two functions to make elements of them.
+-- and we may use the next two transformations to make
+-- elements of them.
 
--- Defines the transformation tracing from P(A) to P(A x Tracing)
+-- Defines tracing from P(A) to P(A x Tracing)
 tracing :: (Trace trace key elt traced wtraced,
             TDistr distr tdistr wtdistr) =>
            GenFn key distr elt a ->
@@ -247,11 +259,11 @@ computed1a =
   Semicolon (Semicolon input1a (drunkenNot1 1)) (drunkenNot1 2)
 
 -- try:
--- runGen computed1
--- runGen computed1a
--- runGen $ tracing computed1
--- runGen $ tracing computed1a
--- runGen $ infer tObs computed1a
+-- > runGen computed1
+-- > runGen computed1a
+-- > runGen $ tracing computed1
+-- > runGen $ tracing computed1a
+-- > runGen $ infer tObs computed1a
 -- ...
 
 
@@ -285,7 +297,7 @@ input2 = Ret $ MyElt Tails
 input2a = Sample (0 :: Int)
                  (makeDSampler $ MyElt Tails)
                  (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
--- This is especially not stochastic right now:
+-- This is especially not stochastic:
 drunkenNot2 k (MyElt x) =
   Sample
     k
@@ -298,11 +310,11 @@ computed2a =
   Semicolon (Semicolon input2a (drunkenNot2 1)) (drunkenNot2 2)
 
 -- try:
--- runGen computed2
--- runGen computed2a
--- runGen $ tracing computed2
--- runGen $ tracing computed2a
--- runGen $ infer tObs computed2a
+-- > runGen computed2
+-- > runGen computed2a
+-- > runGen $ tracing computed2
+-- > runGen $ tracing computed2a
+-- > runGen $ infer tObs computed2a
 -- ...
 
 
@@ -362,10 +374,10 @@ test3 n = do
   putStrLn . show $ fromIntegral (length tails) / fromIntegral n
 
 -- try:
--- rsample $ runGen computed3
--- rsample $ runGen computed3a
--- rsample . runGen $ tracing computed3
--- rsample . runGen $ tracing computed3a
--- rsample . runGen $ infer tObs computed3a
+-- > rsample $ runGen computed3
+-- > rsample $ runGen computed3a
+-- > rsample . runGen $ tracing computed3
+-- > rsample . runGen $ tracing computed3a
+-- > rsample . runGen $ infer tObs computed3a
 -- ...
--- test3 100
+-- > test3 100
