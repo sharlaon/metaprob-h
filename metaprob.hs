@@ -44,22 +44,27 @@ import Control.Monad.Random
 --     * Key examples: f(A) = A, and f(A) = A x Trace.
 -- The rest of the correspondence is documented as we go.
 
--- Describes distributions R(f(A)) on elements f(A)
--- (Note that if `elt a` were just `a`, then we would be describing
--- none other than a monad here.)
-class Distr distr elt | distr -> elt where
-  dirac :: elt a -> distr a
-  convolve :: Eq (elt a) => distr a -> (elt a -> distr a) -> distr a
+-- Describes
+--   * distributions R(f(A)) = `distr`
+-- on
+--   * elements f(A) = `elt a`
+-- (Note: if `elt a` were just `a`, we would be describing none other
+-- than a functor (pushForward) and monad (dirac, convolve) here.)
+class Distr distr where
+  pushForward :: (elt a -> elt' a) -> distr elt a -> distr elt' a
+  dirac :: elt a -> distr elt a
+  convolve :: Eq (elt a) =>
+              distr elt a -> (elt a -> distr elt a) -> distr elt a
 
 -- Defines generative functions P(f(A)) in terms of f(A) and R(f(A))
 data GenFn key distr elt a =
-  Sample key (distr a) (elt a -> Double) |
+  Sample key (distr elt a) (elt a -> Double) |
   Ret (elt a) |
   Semicolon (GenFn key distr elt a) (elt a -> GenFn key distr elt a)
 
 -- Defines the "Gen" interpretation [[ ]]_g from P(f(A)) to R(f(A))
-runGen :: (Distr distr elt, Eq (elt a)) =>
-          GenFn key distr elt a -> distr a
+runGen :: (Distr distr, Eq (elt a)) =>
+          GenFn key distr elt a -> distr elt a
 runGen (Sample k sample score) = sample
 runGen (Ret e) = dirac e
 runGen (Semicolon p1 p2) = convolve (runGen p1) (runGen . p2)
@@ -71,6 +76,8 @@ data TValue a = TNone | Traced a | Intervene a | Observe a
 --   * `traced a` corresponds to f(A) = A x Trace, and
 --   * `wtraced a` corresponds to f(A) = A x Trace x R^+.
 -- And, yes, `trace` corresponds to Trace.
+-- Generative functions of these types are then related by tracing and
+-- infer, below.
 class Trace trace key elt traced wtraced |
       trace -> key elt traced wtraced,
       traced -> trace, wtraced -> traced where
@@ -95,25 +102,15 @@ extendByZeroW :: Trace trace key elt traced wtraced =>
 extendByZeroW f xtw = let (x, t, _) = getWTraced xtw in
                       if null $ getTrace t then f x else 0.0
 
--- Relates R(A) to R(A x Trace) and R(A x Trace x R^+)
-class TDistr distr tdistr wtdistr |
-      distr -> wtdistr tdistr where
-  pushForward :: distr a -> tdistr a
-  pushForwardW :: distr a -> wtdistr a
-
--- Then P(A x Tracing) is `GenFn key tdistr traced a` and
--- P(A x Tracing x R^+) is `GenFn key wtdistr wtraced a`,
--- and we may use the next two transformations to make
--- elements of them.
-
 -- Defines tracing from P(A) to P(A x Tracing)
-tracing :: (Trace trace key elt traced wtraced,
-            TDistr distr tdistr wtdistr) =>
+tracing :: (Trace trace key elt traced wtraced, Distr distr) =>
            GenFn key distr elt a ->
-           GenFn key tdistr traced a
+           GenFn key distr traced a
 tracing (Sample k dist score) =
   Semicolon
-    (Sample k (pushForward dist) (extendByZero score))
+    (Sample k
+            (pushForward (\x -> makeTraced (x, emptyTrace)) dist)
+            (extendByZero score))
     (\xt -> let (x, _) = getTraced xt in
             Ret $ makeTraced (x, kvTrace k (Traced x)))
 tracing (Ret x) = Ret $ makeTraced (x, emptyTrace)
@@ -127,11 +124,10 @@ tracing (Semicolon p1 p2) =
                       Ret $ makeTraced (y, appendTrace s t)))
 
 -- Defines infer_t from P(A) to P(A x Tracing x R^+)
-infer :: (Trace trace key elt traced wtraced,
-          TDistr distr tdistr wtdistr,
+infer :: (Trace trace key elt traced wtraced, Distr distr,
           Eq key) =>
          trace a -> GenFn key distr elt a ->
-         GenFn key wtdistr wtraced a
+         GenFn key distr wtraced a
 infer tr (Sample k dist score) =
   Semicolon
     (case traceValue tr k of
@@ -139,7 +135,11 @@ infer tr (Sample k dist score) =
        Intervene x -> Ret $ makeWTraced (x, emptyTrace, 1.0)
        _ ->
          Semicolon
-           (Sample k (pushForwardW dist) (extendByZeroW score))
+           (Sample k
+                   (pushForward
+                      (\x -> makeWTraced (x, emptyTrace, 1.0))
+                      dist)
+                   (extendByZeroW score))
            (\xtw -> let (x, _, _) = getWTraced xtw in
                     Ret $ makeWTraced (x, emptyTrace, 1.0)))
     (\ytw -> let (y, _, w) = getWTraced ytw in
@@ -204,6 +204,23 @@ data MySet = Tails | Heads deriving (Show, Eq)
 myNot Tails = Heads
 myNot Heads = Tails
 
+input :: GenFn key distr MyElt MySet
+input = Ret $ MyElt Tails
+input' :: Distr distr => GenFn Int distr MyElt MySet
+input' = Sample (0 :: Int)
+                (dirac $ MyElt Tails)
+                (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
+
+drunkenNot :: (MySet -> distr MyElt MySet) -> key ->
+              MyElt MySet -> GenFn key distr MyElt MySet
+drunkenNot d k (MyElt x) =
+  Sample
+    k
+    (d x)
+    (\(MyElt y) -> if y == x       then 0.1
+              else if y == myNot x then 0.9
+                                   else 0.0)
+
 tObs = MyTrace [(0 :: Int, Observe (MyElt Heads))]
 tInt = MyTrace [(0 :: Int, Intervene (MyElt Heads))]
 
@@ -226,7 +243,8 @@ squashDiracs ((x, v) : xvs) =
 newtype Diracs elt a = Diracs { diracs :: [(elt a, Double)] }
 instance Show (elt a) => Show (Diracs elt a) where
   show (Diracs d) = "Diracs" ++ concat (map (\l -> "\n " ++ show l) d)
-instance Distr (Diracs elt) elt where
+instance Distr Diracs where
+  pushForward f = Diracs . map (\(x, u) -> (f x, u)) . diracs
   dirac x = Diracs [(x, 1.0)]
   convolve d1 d2 = Diracs . squashDiracs . concat $
     map (\xu -> let (x, u) = xu in
@@ -234,36 +252,28 @@ instance Distr (Diracs elt) elt where
                     (diracs $ d2 x))
         (diracs d1)
 
-instance TDistr (Diracs MyElt)
-                (Diracs (MyTraced Int))
-                (Diracs (MyWTraced Int)) where
-  pushForward (Diracs d) =
-    Diracs $ map (\(x, u) -> (makeTraced (x, emptyTrace), u)) d
-  pushForwardW (Diracs d)=
-    Diracs $ map (\(x, u) -> (makeWTraced (x, emptyTrace, 1.0), u)) d
+tracing1 = tracing
+  :: GenFn Int Diracs MyElt MySet ->
+     GenFn Int Diracs (MyTraced Int) MySet
+infer1 = infer
+  :: MyTrace Int MySet -> GenFn Int Diracs MyElt MySet ->
+     GenFn Int Diracs (MyWTraced Int) MySet
 
-input1 = Ret $ MyElt Tails
-         :: GenFn Int (Diracs MyElt) MyElt MySet
-input1a = Sample (0 :: Int)
-                 (Diracs [(MyElt Tails, 1.0)])
-                 (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
-drunkenNot1 k (MyElt x) =
-  Sample
-    k
-    (Diracs [(MyElt $ myNot x, 0.9), (MyElt x, 0.1)])
-    (\(MyElt y) ->
-       if y == x then 0.1 else if y == myNot x then 0.9 else 0.0)
+input1 = input :: GenFn Int Diracs MyElt MySet
+input1' = input' :: GenFn Int Diracs MyElt MySet
+drunkenNot1 =
+  drunkenNot (\x -> Diracs [(MyElt $ myNot x, 0.9), (MyElt x, 0.1)])
 computed1 =
   Semicolon (Semicolon input1 (drunkenNot1 1)) (drunkenNot1 2)
-computed1a =
-  Semicolon (Semicolon input1a (drunkenNot1 1)) (drunkenNot1 2)
+computed1' =
+  Semicolon (Semicolon input1' (drunkenNot1 1)) (drunkenNot1 2)
 
 -- try:
 -- > runGen computed1
--- > runGen computed1a
--- > runGen $ tracing computed1
--- > runGen $ tracing computed1a
--- > runGen $ infer tObs computed1a
+-- > runGen computed1'
+-- > runGen $ tracing1 computed1
+-- > runGen $ tracing1 computed1'
+-- > runGen $ infer1 tObs computed1'
 -- ...
 
 
@@ -273,48 +283,36 @@ computed1a =
 -- warm-up for Example 3 below.
 --
 
-newtype DSampler elt a = DSampler { sampler :: () -> elt a }
-makeDSampler :: elt a -> DSampler elt a
-makeDSampler x = DSampler (\_ -> x)
-dsample :: DSampler elt a -> elt a
-dsample (DSampler s) = s ()
+newtype DSampler elt a = DSampler { dsampler :: () -> elt a }
 instance Show (elt a) => Show (DSampler elt a) where
-  show s = "() -> " ++ show (dsample s)
-instance Distr (DSampler elt) elt where
-  dirac = makeDSampler
-  convolve s1 s2 = s2 $ dsample s1
+  show s = "() -> " ++ show (dsampler s ())
+instance Distr DSampler where
+  pushForward f = DSampler . (\x -> f . x) . dsampler
+  dirac x = DSampler (\_ -> x)
+  convolve s1 s2 = s2 $ dsampler s1 ()
 
-instance TDistr (DSampler MyElt)
-                (DSampler (MyTraced Int))
-                (DSampler (MyWTraced Int)) where
-  pushForward s =
-    makeDSampler $ MyTraced (dsample s, emptyTrace)
-  pushForwardW s =
-    makeDSampler $ MyWTraced (dsample s, emptyTrace, 1.0)
+tracing2 = tracing
+  :: GenFn Int DSampler MyElt MySet ->
+     GenFn Int DSampler (MyTraced Int) MySet
+infer2 = infer
+  :: MyTrace Int MySet -> GenFn Int DSampler MyElt MySet ->
+     GenFn Int DSampler (MyWTraced Int) MySet
 
-input2 = Ret $ MyElt Tails
-         :: GenFn Int (DSampler MyElt) MyElt MySet
-input2a = Sample (0 :: Int)
-                 (makeDSampler $ MyElt Tails)
-                 (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
+input2 = input :: GenFn Int DSampler MyElt MySet
+input2' = input' :: GenFn Int DSampler MyElt MySet
 -- This is especially not stochastic:
-drunkenNot2 k (MyElt x) =
-  Sample
-    k
-    (makeDSampler . MyElt $ myNot x)
-    (\(MyElt y) ->
-       if y == x then 0.1 else if y == myNot x then 0.9 else 0.0)
+drunkenNot2 = drunkenNot (\x -> dirac $ MyElt $ myNot x)
 computed2 =
   Semicolon (Semicolon input2 (drunkenNot2 1)) (drunkenNot2 2)
-computed2a =
-  Semicolon (Semicolon input2a (drunkenNot2 1)) (drunkenNot2 2)
+computed2' =
+  Semicolon (Semicolon input2' (drunkenNot2 1)) (drunkenNot2 2)
 
 -- try:
 -- > runGen computed2
--- > runGen computed2a
--- > runGen $ tracing computed2
--- > runGen $ tracing computed2a
--- > runGen $ infer tObs computed2a
+-- > runGen computed2'
+-- > runGen $ tracing2 computed2
+-- > runGen $ tracing2 computed2'
+-- > runGen $ infer2 tObs computed2'
 -- ...
 
 
@@ -324,48 +322,31 @@ computed2a =
 --
 
 newtype RSampler g elt a = RSampler { rsampler :: Rand g (elt a) }
--- The presence of `elt a` rather than just `a` means we must rewrap
--- our own versions of `fmap` and `bind`:
-eltfmap :: (elt a -> elt' a) ->
-           RSampler g elt a ->
-           RSampler g elt' a
-eltfmap f = RSampler . fmap f . rsampler
-eltbind :: RSampler g elt a ->
-           (elt a -> RSampler g elt a) ->
-           RSampler g elt a
-x `eltbind` f = RSampler $ (rsampler x) >>= (\y -> rsampler (f y))
-
-makeRSampler :: RandomGen g => elt a -> RSampler g elt a
-makeRSampler x = RSampler $ uniform [x]
 -- This plays the role of the Show instance:
 rsample :: RSampler StdGen elt a -> IO (elt a)
 rsample = evalRandIO . rsampler
-instance RandomGen g => Distr (RSampler g elt) elt where
-  dirac = makeRSampler
-  convolve s1 s2 = s1 `eltbind` s2
+instance RandomGen g => Distr (RSampler g) where
+  pushForward f = RSampler . fmap f . rsampler
+  dirac x = RSampler $ uniform [x]
+  convolve s1 s2 =
+    RSampler $ (rsampler s1) >>= (\x -> rsampler (s2 x))
 
-instance TDistr (RSampler g MyElt)
-                (RSampler g (MyTraced Int))
-                (RSampler g (MyWTraced Int)) where
-  pushForward = eltfmap (\x -> MyTraced (x, emptyTrace))
-  pushForwardW = eltfmap (\x -> MyWTraced (x, emptyTrace, 1.0))
+tracing3 = tracing
+  :: GenFn Int (RSampler StdGen) MyElt MySet ->
+     GenFn Int (RSampler StdGen) (MyTraced Int) MySet
+infer3 = infer
+  :: MyTrace Int MySet -> GenFn Int (RSampler StdGen) MyElt MySet ->
+     GenFn Int (RSampler StdGen) (MyWTraced Int) MySet
 
-input3 = Ret $ MyElt Tails
-         :: GenFn Int (RSampler StdGen MyElt) MyElt MySet
-input3a = Sample (0 :: Int)
-                 (makeRSampler $ MyElt Tails
-                  :: RSampler StdGen MyElt MySet)
-                 (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
-drunkenNot3 k (MyElt x) =
-  Sample
-    k
-    (RSampler $ fromList [(MyElt $ myNot x, 0.9), (MyElt x, 0.1)])
-    (\(MyElt y) ->
-       if y == x then 0.1 else if y == myNot x then 0.9 else 0.0)
+input3 = input :: GenFn Int (RSampler StdGen) MyElt MySet
+input3' = input' :: GenFn Int (RSampler StdGen) MyElt MySet
+drunkenNot3 =
+  drunkenNot
+    (\x -> RSampler $ fromList [(MyElt $ myNot x, 0.9), (MyElt x, 0.1)])
 computed3 =
   Semicolon (Semicolon input3 (drunkenNot3 1)) (drunkenNot3 2)
-computed3a =
-  Semicolon (Semicolon input3a (drunkenNot3 1)) (drunkenNot3 2)
+computed3' =
+  Semicolon (Semicolon input3' (drunkenNot3 1)) (drunkenNot3 2)
 
 test3 n = do
   flips <- sequence . (replicate n) . rsample . runGen $ computed3
@@ -375,9 +356,9 @@ test3 n = do
 
 -- try:
 -- > rsample $ runGen computed3
--- > rsample $ runGen computed3a
--- > rsample . runGen $ tracing computed3
--- > rsample . runGen $ tracing computed3a
--- > rsample . runGen $ infer tObs computed3a
+-- > rsample $ runGen computed3'
+-- > rsample . runGen $ tracing3 computed3
+-- > rsample . runGen $ tracing3 computed3'
+-- > rsample . runGen $ infer3 tObs computed3'
 -- ...
 -- > test3 100
