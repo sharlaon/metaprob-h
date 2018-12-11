@@ -21,8 +21,9 @@ import Control.Monad.Random
 -- In all cases, the goal is conceptual clarity, ignoring
 -- computational efficiency.
 
--- This file is intended to be loaded in ghci via ":l metaprob.hs"
--- followed by the suggestions under the "try:" comments in the
+-- This file is intended to be loaded in ghci via
+-- > :l metaprob.hs
+-- followed by the suggestions under the "try:"s comments in the
 -- examples below.
 
 -- TODOS:
@@ -164,6 +165,8 @@ infer tr (Semicolon p1 p2) =
 -- Default implementation of shared items
 --
 
+-- Trace-related things
+
 newtype MyElt a = MyElt { myElt :: a } deriving Eq
 instance Show a => Show (MyElt a) where
   show (MyElt a) = show a
@@ -199,6 +202,8 @@ instance Trace (MyTrace key)
   makeTraced = MyTraced
   getWTraced = myWTraced
   makeWTraced = MyWTraced
+
+-- Example/omputation-related things
 
 data MySet = Tails | Heads deriving (Show, Eq)
 myNot Tails = Heads
@@ -328,8 +333,7 @@ rsample = evalRandIO . rsampler
 instance RandomGen g => Distr (RSampler g) where
   pushForward f = RSampler . fmap f . rsampler
   dirac x = RSampler $ uniform [x]
-  convolve s1 s2 =
-    RSampler $ (rsampler s1) >>= (\x -> rsampler (s2 x))
+  convolve s1 s2 = RSampler $ (rsampler s1) >>= (\x -> rsampler (s2 x))
 
 tracing3 = tracing
   :: GenFn Int (RSampler StdGen) MyElt MySet ->
