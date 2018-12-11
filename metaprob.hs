@@ -164,23 +164,23 @@ infer tr (Semicolon p1 p2) =
 -- Default implementation of shared items
 --
 
-data MyElt a = MyElt { myElt :: a } deriving Eq
+newtype MyElt a = MyElt { myElt :: a } deriving Eq
 instance Show a => Show (MyElt a) where
   show (MyElt a) = show a
 
-data MyTrace key a =
+newtype MyTrace key a =
   MyTrace { myTrace :: [(key, TValue (MyElt a))] }
   deriving Eq
 instance (Show key, Show a) => Show (MyTrace key a) where
   show (MyTrace t) = "Trace " ++ show t
 
-data MyTraced key a =
+newtype MyTraced key a =
   MyTraced { myTraced :: (MyElt a, MyTrace key a) }
   deriving Eq
 instance (Show key, Show a) => Show (MyTraced key a) where
   show (MyTraced (MyElt x, MyTrace t)) = show (x, t)
 
-data MyWTraced key a =
+newtype MyWTraced key a =
   MyWTraced { myWTraced :: (MyElt a, MyTrace key a, Double) }
   deriving Eq
 instance (Show key, Show a) => Show (MyWTraced key a) where
@@ -223,7 +223,7 @@ squashDiracs ((x, v) : xvs) =
   if null hit then (x, v) : yws
               else (x, v + (snd $ head hit)) : miss
 
-data Diracs elt a = Diracs { diracs :: [(elt a, Double)] }
+newtype Diracs elt a = Diracs { diracs :: [(elt a, Double)] }
 instance Show (elt a) => Show (Diracs elt a) where
   show (Diracs d) = "Diracs" ++ concat (map (\l -> "\n " ++ show l) d)
 instance Distr (Diracs elt) elt where
@@ -273,7 +273,7 @@ computed1a =
 -- warm-up for Example 3 below.
 --
 
-data DSampler elt a = DSampler { sampler :: () -> elt a }
+newtype DSampler elt a = DSampler { sampler :: () -> elt a }
 makeDSampler :: elt a -> DSampler elt a
 makeDSampler x = DSampler (\_ -> x)
 dsample :: DSampler elt a -> elt a
