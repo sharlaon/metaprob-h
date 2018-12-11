@@ -56,7 +56,7 @@ class Distr distr where
               distr elt a -> (elt a -> distr elt a) -> distr elt a
 -- A distribution is morally just a monad applied to the element type:
 newtype MDistr m elt a = MDistr { mDistr :: m (elt a) }
-instance (Monad m) => Distr (MDistr m) where
+instance Monad m => Distr (MDistr m) where
   pushForward f = MDistr . fmap f . mDistr
   dirac = MDistr . return
   convolve s1 s2 = MDistr $ (mDistr s1) >>= (mDistr . s2)
@@ -220,15 +220,16 @@ input' = Sample (0 :: Int)
                 (dirac $ MyElt Tails)
                 (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
 
+drunkenNotList :: (Fractional t) => MySet -> [(MyElt MySet, t)]
+drunkenNotList x = [(MyElt $ myNot x, 0.9), (MyElt x, 0.1)]
+drunkenNotScore :: MySet -> MyElt MySet -> Double
+drunkenNotScore x (MyElt y) =
+  if y == x then 0.1
+  else if y == myNot x then 0.9
+  else 0.0 -- Not reachable but syntactically required
 drunkenNot :: (MySet -> distr MyElt MySet) -> key ->
               MyElt MySet -> GenFn key distr MyElt MySet
-drunkenNot d k (MyElt x) =
-  Sample
-    k
-    (d x)
-    (\(MyElt y) -> if y == x       then 0.1
-              else if y == myNot x then 0.9
-                                   else 0.0)
+drunkenNot d k (MyElt x) = Sample k (d x) (drunkenNotScore x)
 
 tObs = MyTrace [(0 :: Int, Observe (MyElt Heads))]
 tInt = MyTrace [(0 :: Int, Intervene (MyElt Heads))]
@@ -280,8 +281,7 @@ infer1 = infer
 
 input1 = input :: GenFn Int Diracs MyElt MySet
 input1' = input' :: GenFn Int Diracs MyElt MySet
-drunkenNot1 =
-  drunkenNot (\x -> Diracs [(MyElt $ myNot x, 0.9), (MyElt x, 0.1)])
+drunkenNot1 = drunkenNot (\x -> Diracs $ drunkenNotList x)
 computed1 =
   Semicolon (Semicolon input1 (drunkenNot1 1)) (drunkenNot1 2)
 computed1' =
@@ -355,8 +355,7 @@ infer3 = infer
 input3 = input :: GenFn Int (RSampler StdGen) MyElt MySet
 input3' = input' :: GenFn Int (RSampler StdGen) MyElt MySet
 drunkenNot3 =
-  drunkenNot
-    (\x -> MDistr $ fromList [(MyElt $ myNot x, 0.9), (MyElt x, 0.1)])
+  drunkenNot (\x -> MDistr . fromList $ drunkenNotList x)
 computed3 =
   Semicolon (Semicolon input3 (drunkenNot3 1)) (drunkenNot3 2)
 computed3' =
