@@ -1,6 +1,8 @@
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE FlexibleInstances #-}
 
+import Control.Monad.Random
+
 --
 -- METAPROB
 --
@@ -19,8 +21,8 @@
 -- TODOS:
 --   * Probabilistic programs of type "A -> B";
 --     currently just type A ~= "() -> A" is supported
---   * Stochasticity in "sampling" example using a random monad
 --   * Some notion of continuous distributions
+
 
 --
 -- INTERFACE
@@ -141,6 +143,7 @@ infer tr (Semicolon p1 p2) =
                         Ret $ makeWTraced
                                 (y, appendTrace s t, (v * w))))
 
+
 --
 -- EXAMPLES
 --
@@ -192,8 +195,9 @@ myNot Heads = Tails
 tObs = MyTrace [(0 :: Int, Observe (MyElt Heads))]
 tInt = MyTrace [(0 :: Int, Intervene (MyElt Heads))]
 
+
 --
--- Meta-example 1:
+-- Example 1:
 -- Measure-theoretically, tracking point masses in the support of the
 -- distribution
 --
@@ -226,73 +230,142 @@ instance TDistr (Diracs MyElt)
   pushForwardW (Diracs d)=
     Diracs $ map (\(x, u) -> (makeWTraced (x, emptyTrace, 1.0), u)) d
 
---
--- Infra-example 1:
--- All the unknown random state consists of a single coin toss outcome.
---
-
-input = Ret $ MyElt Tails :: GenFn Int (Diracs MyElt) MyElt MySet
-input2 = Sample (0 :: Int)
-                (Diracs [(MyElt Tails, 1.0)])
-                (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
-drunkenNot k (MyElt x) =
+input1 = Ret $ MyElt Tails
+         :: GenFn Int (Diracs MyElt) MyElt MySet
+input1a = Sample (0 :: Int)
+                 (Diracs [(MyElt Tails, 1.0)])
+                 (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
+drunkenNot1 k (MyElt x) =
   Sample
     k
     (Diracs [(MyElt $ myNot x, 0.9), (MyElt x, 0.1)])
     (\(MyElt y) ->
-       if y == x then 0.1 else if y == myNot x then 0.9 else 0)
-computed = Semicolon (Semicolon input (drunkenNot 1)) (drunkenNot 2)
-computed2 = Semicolon (Semicolon input2 (drunkenNot 1)) (drunkenNot 2)
+       if y == x then 0.1 else if y == myNot x then 0.9 else 0.0)
+computed1 =
+  Semicolon (Semicolon input1 (drunkenNot1 1)) (drunkenNot1 2)
+computed1a =
+  Semicolon (Semicolon input1a (drunkenNot1 1)) (drunkenNot1 2)
 
 -- try:
--- runGen computed
--- runGen computed2
--- runGen $ tracing computed
--- runGen $ tracing computed2
--- runGen $ infer tObs computed2
+-- runGen computed1
+-- runGen computed1a
+-- runGen $ tracing computed1
+-- runGen $ tracing computed1a
+-- runGen $ infer tObs computed1a
 -- ...
 
+
 --
--- Meta-example 2: Executing sampling prodedures
+-- Example 2:
+-- Executing determinstic sampling prodedures.  This is a conceptual
+-- warm-up for Example 3 below.
 --
 
--- TODO: hook into a random monad; the sample is deterministic for now
+data DSampler elt a = DSampler { sampler :: () -> elt a }
+makeDSampler :: elt a -> DSampler elt a
+makeDSampler x = DSampler (\_ -> x)
+dsample :: DSampler elt a -> elt a
+dsample (DSampler s) = s ()
+instance Show (elt a) => Show (DSampler elt a) where
+  show s = "() -> " ++ show (dsample s)
+instance Distr (DSampler elt) elt where
+  dirac = makeDSampler
+  convolve s1 s2 = s2 $ dsample s1
 
-data Sampler elt a = Sampler { sampler :: () -> elt a }
-makeSampler :: elt a -> Sampler elt a
-makeSampler x = Sampler (\_ -> x)
-sample :: Sampler elt a -> elt a
-sample (Sampler s) = s ()
-instance Show (elt a) => Show (Sampler elt a) where
-  show s = "() -> " ++ show (sample s)
-instance Distr (Sampler elt) elt where
-  dirac = makeSampler
-  convolve s1 s2 = s2 $ sample s1
-
-instance TDistr (Sampler MyElt)
-                (Sampler (MyTraced Int))
-                (Sampler (MyWTraced Int)) where
+instance TDistr (DSampler MyElt)
+                (DSampler (MyTraced Int))
+                (DSampler (MyWTraced Int)) where
   pushForward s =
-    makeSampler $ MyTraced (sample s, emptyTrace)
+    makeDSampler $ MyTraced (dsample s, emptyTrace)
   pushForwardW s =
-    makeSampler $ MyWTraced (sample s, emptyTrace, 1.0)
+    makeDSampler $ MyWTraced (dsample s, emptyTrace, 1.0)
 
---
--- Infra-example 2:
---
-
-inptt = Ret $ MyElt Tails :: GenFn Int (Sampler MyElt) MyElt MySet
-inptt2 = Sample (0 :: Int)
-                (makeSampler $ MyElt Tails)
-                (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
+input2 = Ret $ MyElt Tails
+         :: GenFn Int (DSampler MyElt) MyElt MySet
+input2a = Sample (0 :: Int)
+                 (makeDSampler $ MyElt Tails)
+                 (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
 -- This is especially not stochastic right now:
-drunkenNtt k (MyElt x) =
+drunkenNot2 k (MyElt x) =
   Sample
     k
-    (makeSampler . MyElt $ myNot x)
+    (makeDSampler . MyElt $ myNot x)
     (\(MyElt y) ->
-       if y == x then 0.1 else if y == myNot x then 0.9 else 0)
-comptted = Semicolon (Semicolon inptt (drunkenNtt 1)) (drunkenNtt 2)
-comptted2 = Semicolon (Semicolon inptt2 (drunkenNtt 1)) (drunkenNtt 2)
+       if y == x then 0.1 else if y == myNot x then 0.9 else 0.0)
+computed2 =
+  Semicolon (Semicolon input2 (drunkenNot2 1)) (drunkenNot2 2)
+computed2a =
+  Semicolon (Semicolon input2a (drunkenNot2 1)) (drunkenNot2 2)
 
--- try: (the analogous things)
+-- try:
+-- runGen computed2
+-- runGen computed2a
+-- runGen $ tracing computed2
+-- runGen $ tracing computed2a
+-- runGen $ infer tObs computed2a
+-- ...
+
+
+--
+-- Example 3:
+-- Executing randomized/stochastic sampling procedures.
+--
+
+newtype RSampler g elt a = RSampler { rsampler :: Rand g (elt a) }
+-- The presence of `elt a` rather than just `a` means we must rewrap
+-- our own versions of `fmap` and `bind`:
+eltfmap :: (elt a -> elt' a) ->
+           RSampler g elt a ->
+           RSampler g elt' a
+eltfmap f = RSampler . fmap f . rsampler
+eltbind :: RSampler g elt a ->
+           (elt a -> RSampler g elt a) ->
+           RSampler g elt a
+x `eltbind` f = RSampler $ (rsampler x) >>= (\y -> rsampler (f y))
+
+makeRSampler :: RandomGen g => elt a -> RSampler g elt a
+makeRSampler x = RSampler $ uniform [x]
+-- This plays the role of the Show instance:
+rsample :: RSampler StdGen elt a -> IO (elt a)
+rsample = evalRandIO . rsampler
+instance RandomGen g => Distr (RSampler g elt) elt where
+  dirac = makeRSampler
+  convolve s1 s2 = s1 `eltbind` s2
+
+instance TDistr (RSampler g MyElt)
+                (RSampler g (MyTraced Int))
+                (RSampler g (MyWTraced Int)) where
+  pushForward = eltfmap (\x -> MyTraced (x, emptyTrace))
+  pushForwardW = eltfmap (\x -> MyWTraced (x, emptyTrace, 1.0))
+
+input3 = Ret $ MyElt Tails
+         :: GenFn Int (RSampler StdGen MyElt) MyElt MySet
+input3a = Sample (0 :: Int)
+                 (makeRSampler $ MyElt Tails
+                  :: RSampler StdGen MyElt MySet)
+                 (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
+drunkenNot3 k (MyElt x) =
+  Sample
+    k
+    (RSampler $ fromList [(MyElt $ myNot x, 0.9), (MyElt x, 0.1)])
+    (\(MyElt y) ->
+       if y == x then 0.1 else if y == myNot x then 0.9 else 0.0)
+computed3 =
+  Semicolon (Semicolon input3 (drunkenNot3 1)) (drunkenNot3 2)
+computed3a =
+  Semicolon (Semicolon input3a (drunkenNot3 1)) (drunkenNot3 2)
+
+test3 n = do
+  flips <- sequence . (replicate n) . rsample . runGen $ computed3
+  let tails = filter (== MyElt Tails) flips
+  -- Output will be ~0.82:
+  putStrLn . show $ fromIntegral (length tails) / fromIntegral n
+
+-- try:
+-- rsample $ runGen computed3
+-- rsample $ runGen computed3a
+-- rsample . runGen $ tracing computed3
+-- rsample . runGen $ tracing computed3a
+-- rsample . runGen $ infer tObs computed3a
+-- ...
+-- test3 100
