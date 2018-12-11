@@ -306,7 +306,7 @@ infer2 = infer
 input2 = input :: GenFn Int DSampler MyElt MySet
 input2' = input' :: GenFn Int DSampler MyElt MySet
 -- This is especially not stochastic:
-drunkenNot2 = drunkenNot (\x -> dirac $ MyElt $ myNot x)
+drunkenNot2 = drunkenNot (\x -> DSampler (\_ -> MyElt $ myNot x))
 computed2 =
   Semicolon (Semicolon input2 (drunkenNot2 1)) (drunkenNot2 2)
 computed2' =
