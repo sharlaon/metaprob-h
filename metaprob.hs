@@ -49,13 +49,17 @@ import Control.Monad.Random
 --   * distributions R(f(A)) = `distr`
 -- on
 --   * elements f(A) = `elt a`
--- (Note: if `elt a` were just `a`, we would be describing none other
--- than a functor (pushForward) and monad (dirac, convolve) here.)
 class Distr distr where
   pushForward :: (elt a -> elt' a) -> distr elt a -> distr elt' a
   dirac :: elt a -> distr elt a
   convolve :: Eq (elt a) =>
               distr elt a -> (elt a -> distr elt a) -> distr elt a
+-- A distribution is morally just a monad applied to the element type:
+newtype MDistr m elt a = MDistr { mDistr :: m (elt a) }
+instance (Monad m) => Distr (MDistr m) where
+  pushForward f = MDistr . fmap f . mDistr
+  dirac = MDistr . return
+  convolve s1 s2 = MDistr $ (mDistr s1) >>= (mDistr . s2)
 
 -- Defines generative functions P(f(A)) in terms of f(A) and R(f(A))
 data GenFn key distr elt a =
@@ -245,6 +249,16 @@ squashDiracs ((x, v) : xvs) =
   if null hit then (x, v) : yws
               else (x, v + (snd $ head hit)) : miss
 
+-- The latent monad in this example is similar to the common
+-- list/"nondeterminism" monad, but here the list values are distinct,
+-- and each value is paired with a weight in R^+.  Whereas the list
+-- monad's bind fans out over all possibilities and concatenates, this
+-- monad's bind fans out, multiplying weights as it goes, and when it
+-- concatenates it collects duplicate values while adding their
+-- weights (the effect of `squashDiracs`).
+-- The reason we do not define a monad instance is that
+-- `squashDiracs`, and therefore the bind operation, requires the
+-- condition `Eq (elt a)`, which monads do not let us impose.
 newtype Diracs elt a = Diracs { diracs :: [(elt a, Double)] }
 instance Show (elt a) => Show (Diracs elt a) where
   show (Diracs d) = "Diracs" ++ concat (map (\l -> "\n " ++ show l) d)
@@ -288,13 +302,11 @@ computed1' =
 -- warm-up for Example 3 below.
 --
 
-newtype DSampler elt a = DSampler { dsampler :: () -> elt a }
+-- Sampling procedures are functions with one value, `() -> elt a`,
+-- otherwise written `(->) () (elt a)`:
+type DSampler = MDistr ((->) ())
 instance Show (elt a) => Show (DSampler elt a) where
-  show s = "() -> " ++ show (dsampler s ())
-instance Distr DSampler where
-  pushForward f = DSampler . (\x -> f . x) . dsampler
-  dirac x = DSampler (\_ -> x)
-  convolve s1 s2 = s2 $ dsampler s1 ()
+  show s = "() -> " ++ show (mDistr s ())
 
 tracing2 = tracing
   :: GenFn Int DSampler MyElt MySet ->
@@ -306,7 +318,7 @@ infer2 = infer
 input2 = input :: GenFn Int DSampler MyElt MySet
 input2' = input' :: GenFn Int DSampler MyElt MySet
 -- This is especially not stochastic:
-drunkenNot2 = drunkenNot (\x -> DSampler (\_ -> MyElt $ myNot x))
+drunkenNot2 = drunkenNot (\x -> MDistr (\_ -> MyElt $ myNot x))
 computed2 =
   Semicolon (Semicolon input2 (drunkenNot2 1)) (drunkenNot2 2)
 computed2' =
@@ -326,14 +338,12 @@ computed2' =
 -- Executing randomized/stochastic sampling procedures.
 --
 
-newtype RSampler g elt a = RSampler { rsampler :: Rand g (elt a) }
+-- The Rand monad carries along the state of a pseudorandom number
+-- generator seed for us:
+type RSampler g = MDistr (Rand g)
 -- This plays the role of the Show instance:
 rsample :: RSampler StdGen elt a -> IO (elt a)
-rsample = evalRandIO . rsampler
-instance RandomGen g => Distr (RSampler g) where
-  pushForward f = RSampler . fmap f . rsampler
-  dirac x = RSampler $ uniform [x]
-  convolve s1 s2 = RSampler $ (rsampler s1) >>= (\x -> rsampler (s2 x))
+rsample = evalRandIO . mDistr
 
 tracing3 = tracing
   :: GenFn Int (RSampler StdGen) MyElt MySet ->
@@ -346,7 +356,7 @@ input3 = input :: GenFn Int (RSampler StdGen) MyElt MySet
 input3' = input' :: GenFn Int (RSampler StdGen) MyElt MySet
 drunkenNot3 =
   drunkenNot
-    (\x -> RSampler $ fromList [(MyElt $ myNot x, 0.9), (MyElt x, 0.1)])
+    (\x -> MDistr $ fromList [(MyElt $ myNot x, 0.9), (MyElt x, 0.1)])
 computed3 =
   Semicolon (Semicolon input3 (drunkenNot3 1)) (drunkenNot3 2)
 computed3' =
