@@ -52,14 +52,15 @@ import Control.Monad.Random
 class Distr distr where
   pushForward :: (elt a -> elt' a) -> distr elt a -> distr elt' a
   dirac :: elt a -> distr elt a
-  convolve :: Eq (elt a) =>
-              distr elt a -> (elt a -> distr elt a) -> distr elt a
+  -- The literature also calls this a "compound" distribution:
+  mixture :: Eq (elt a) =>
+             distr elt a -> (elt a -> distr elt a) -> distr elt a
 -- A distribution is morally just a monad applied to the element type:
 newtype MDistr m elt a = MDistr { mDistr :: m (elt a) }
 instance Monad m => Distr (MDistr m) where
   pushForward f = MDistr . fmap f . mDistr
   dirac = MDistr . return
-  convolve s1 s2 = MDistr $ (mDistr s1) >>= (mDistr . s2)
+  mixture s1 s2 = MDistr $ (mDistr s1) >>= (mDistr . s2)
 
 -- Defines generative functions P(f(A)) in terms of f(A) and R(f(A))
 data GenFn key distr elt a =
@@ -72,7 +73,7 @@ runGen :: (Distr distr, Eq (elt a)) =>
           GenFn key distr elt a -> distr elt a
 runGen (Sample k sample score) = sample
 runGen (Ret e) = dirac e
-runGen (Semicolon p1 p2) = convolve (runGen p1) (runGen . p2)
+runGen (Semicolon p1 p2) = mixture (runGen p1) (runGen . p2)
 
 data TValue a = TNone | Traced a | Intervene a | Observe a
                 deriving (Eq, Show)
@@ -266,7 +267,7 @@ instance Show (elt a) => Show (Diracs elt a) where
 instance Distr Diracs where
   pushForward f = Diracs . map (\(x, u) -> (f x, u)) . diracs
   dirac x = Diracs [(x, 1.0)]
-  convolve d1 d2 = Diracs . squashDiracs . concat $
+  mixture d1 d2 = Diracs . squashDiracs . concat $
     map (\xu -> let (x, u) = xu in
                 map (\yv -> let (y, v) = yv in (y, u * v))
                     (diracs $ d2 x))
