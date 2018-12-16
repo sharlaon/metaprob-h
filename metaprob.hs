@@ -1,6 +1,9 @@
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE QuantifiedConstraints #-}
 
+import Data.Dynamic
 import Control.Monad.Random
 
 --
@@ -27,8 +30,6 @@ import Control.Monad.Random
 -- examples below.
 
 -- TODOS:
---   * Probabilistic programs of type "A -> B";
---     currently just type A ~= "() -> A" is supported
 --   * Some notion of continuous distributions
 
 
@@ -36,69 +37,119 @@ import Control.Monad.Random
 -- INTERFACE
 --
 
--- Here is some of our notation compared with the Metaprob paper:
---   * The space K of trace keys is represented by `key`.
---   * The type A of elements we wish to compute about is `a`.
---     We assume that A is essentially a finite discrete set,
---     though the code might sometimes work more generally.
---   * We fix some parametric type f(A) in the world of the paper.
---     * Key examples: f(A) = A, and f(A) = A x Trace.
--- The rest of the correspondence is documented as we go.
+-- We describe the relationship between our notation and that of the
+-- paper as we go.  We assume that the type A there is a finite
+-- discrete set, although the code may accidentally work more
+-- generally.
 
--- Describes
---   * distributions R(f(A)) = `distr`
--- on
---   * elements f(A) = `elt a`
+-- Describes operations we use on types throughout.
+-- The variable `a` here is either A from the paper, or f(A) below.
+class (Eq a, Show a, Typeable a) => BaseType a where
+
+-- Describes the operations on A carrying over to a parametric type
+-- f(A) in the world of the paper.
+class (forall a. BaseType a => BaseType (elt a), Typeable elt) =>
+      EltType elt where
+
+-- Describes distributions R(f(A)) on f(A).
 class Distr distr where
-  pushForward :: (elt a -> elt' a) -> distr elt a -> distr elt' a
-  dirac :: elt a -> distr elt a
+  pushForward :: (EltType elt, EltType elt', BaseType a) =>
+                 (elt a -> elt' a) -> distr elt a -> distr elt' a
+  dirac :: (EltType elt, BaseType a) =>
+           elt a -> distr elt a
   -- The literature also calls this a "compound" distribution:
-  mixture :: Eq (elt a) =>
-             distr elt a -> (elt a -> distr elt a) -> distr elt a
--- A distribution is morally just a monad applied to the element type:
+  mixture :: (EltType elt, BaseType a, BaseType b) =>
+             distr elt a -> (elt a -> distr elt b) -> distr elt b
+
+-- A distribution is morally just a monad applied to the element type.
 newtype MDistr m elt a = MDistr { mDistr :: m (elt a) }
 instance Monad m => Distr (MDistr m) where
   pushForward f = MDistr . fmap f . mDistr
   dirac = MDistr . return
   mixture s1 s2 = MDistr $ (mDistr s1) >>= (mDistr . s2)
 
--- Defines generative functions P(f(A)) in terms of f(A) and R(f(A))
-data GenFn key distr elt a =
-  Sample key (distr elt a) (elt a -> Double) |
-  Ret (elt a) |
-  Semicolon (GenFn key distr elt a) (elt a -> GenFn key distr elt a)
+-- Defines generative values in terms of f(A) and R(f(A)).
+data GenVal key distr elt a where
+  Sample :: (EltType elt, BaseType a) =>
+    key -> (distr elt a) -> (elt a -> Double)
+    -> GenVal key distr elt a
+  Ret :: (EltType elt, BaseType a) =>
+    (elt a)
+    -> GenVal key distr elt a
+  Evaluate :: (EltType elt, BaseType c, BaseType a) =>
+    (GenVal key distr elt c) -> (GenFn key distr elt c a)
+    -> GenVal key distr elt a
 
--- Defines the "Gen" interpretation [[ ]]_g from P(f(A)) to R(f(A))
-runGen :: (Distr distr, Eq (elt a)) =>
-          GenFn key distr elt a -> distr elt a
+-- Defines generative functions, similarly.
+data GenFn key distr elt a b where
+  Gen :: (EltType elt, BaseType a, BaseType b) =>
+    (elt a -> GenVal key distr elt b)
+    -> GenFn key distr elt a b
+  Compose :: (EltType elt, BaseType a, BaseType c, BaseType b) =>
+    (GenFn key distr elt a c) -> (GenFn key distr elt c b)
+    -> GenFn key distr elt a b
+
+-- "Generative procedures" P(f(A)) as in the paper morally consist of
+-- `GenVal key distr elt a` and `GenFn key distr elt a a` blended
+-- together into one type.
+
+-- Defines the "Gen" interpretation [[ ]]_g from P(f(A)) to R(f(A)).
+runGen :: (Distr distr, EltType elt, BaseType a) =>
+          GenVal key distr elt a -> distr elt a
 runGen (Sample k sample score) = sample
-runGen (Ret e) = dirac e
-runGen (Semicolon p1 p2) = mixture (runGen p1) (runGen . p2)
+runGen (Ret x) = dirac x
+runGen (Evaluate x f) = mixture (runGen x) (runGen' f)
 
-data TValue a = TNone | Traced a | Intervene a | Observe a
-                deriving (Eq, Show)
+runGen' :: (Distr distr, EltType elt, BaseType a, BaseType b) =>
+           GenFn key distr elt a b -> elt a -> distr elt b
+runGen' (Gen f) = runGen . f
+runGen' (Compose f1 f2) = \x -> mixture (runGen' f1 $ x) (runGen' f2)
+
+
+data TValue =
+  TNone | Traced String | Observe Dynamic | Intervene Dynamic
+  deriving Show
+instance Eq TValue where
+  TNone == TNone = True
+  -- The following should be improved.
+  -- The paper only ever uses one type A, but we allow heterogeneous
+  -- types, forcing us to employ the Dynamic trick above, and losing a
+  -- good notion of equality of values.
+  -- The only place this `Eq` intance is used is in squashDiracs, so
+  -- in that implementation we simply have a failure to properly
+  -- simplify mixture distributions when the values are traced.
+  _ == _ = False
+
 -- In the context of `class Trace`,
+--   * `trace` corrsponds to Trace,
 --   * `elt a` corresponds to f(A) = A,
 --   * `traced a` corresponds to f(A) = A x Trace, and
 --   * `wtraced a` corresponds to f(A) = A x Trace x R^+.
--- And, yes, `trace` corresponds to Trace.
--- Generative functions of these types are then related by tracing and
--- infer, below.
-class Trace trace key elt traced wtraced |
+class (Eq trace, BaseType key,
+       EltType elt, EltType traced, EltType wtraced) =>
+      Trace trace key elt traced wtraced |
       trace -> key elt traced wtraced,
       traced -> trace, wtraced -> traced where
-  getTrace :: trace a -> [(key, TValue (elt a))]
-  emptyTrace :: trace a
-  kvTrace :: key -> TValue (elt a) -> trace a
-  appendTrace :: trace a -> trace a -> trace a
-  getTraced :: traced a -> (elt a, trace a)
-  makeTraced :: (elt a, trace a) -> traced a
-  getWTraced :: wtraced a -> (elt a, trace a, Double)
-  makeWTraced :: (elt a, trace a, Double) -> wtraced a
-traceValue :: (Trace trace key elt traced wtraced, Eq key) =>
-              trace a -> key -> TValue (elt a)
-traceValue t k = let res = filter ((== k) . fst) (getTrace t) in
-                 if null res then TNone else snd $ head res
+  getTrace :: trace -> [(key, TValue)]
+  emptyTrace :: trace
+  kvTrace :: key -> TValue -> trace
+  appendTrace :: trace -> trace -> trace
+  getTraced :: traced a -> (elt a, trace)
+  makeTraced :: (elt a, trace) -> traced a
+  getWTraced :: wtraced a -> (elt a, trace, Double)
+  makeWTraced :: (elt a, trace, Double) -> wtraced a
+unTrace :: Trace trace key elt traced wtraced =>
+           traced a -> elt a
+unTrace xt = let (x, _) = getTraced xt in x
+unWTrace :: Trace trace key elt traced wtraced =>
+            wtraced a -> elt a
+unWTrace xtw = let (x, _, _) = getWTraced xtw in x
+emptyTraced :: Trace trace key elt traced wtraced =>
+               elt a -> traced a
+emptyTraced x = makeTraced (x, emptyTrace)
+emptyWTraced :: Trace trace key elt traced wtraced =>
+                elt a -> wtraced a
+emptyWTraced x = makeWTraced (x, emptyTrace, 1.0)
 extendByZero :: Trace trace key elt traced wtraced =>
                 (elt a -> Double) -> traced a -> Double
 extendByZero f xt = let (x, t) = getTraced xt in
@@ -107,59 +158,97 @@ extendByZeroW :: Trace trace key elt traced wtraced =>
                  (elt a -> Double) -> wtraced a -> Double
 extendByZeroW f xtw = let (x, t, _) = getWTraced xtw in
                       if null $ getTrace t then f x else 0.0
+traceValue :: Trace trace key elt traced wtraced =>
+              trace -> key -> TValue
+traceValue t k = let res = filter ((== k) . fst) (getTrace t) in
+                 if null res then TNone else snd $ head res
 
--- Defines tracing from P(A) to P(A x Tracing)
-tracing :: (Trace trace key elt traced wtraced, Distr distr) =>
-           GenFn key distr elt a ->
-           GenFn key distr traced a
-tracing (Sample k dist score) =
-  Semicolon
-    (Sample k
-            (pushForward (\x -> makeTraced (x, emptyTrace)) dist)
-            (extendByZero score))
-    (\xt -> let (x, _) = getTraced xt in
-            Ret $ makeTraced (x, kvTrace k (Traced x)))
-tracing (Ret x) = Ret $ makeTraced (x, emptyTrace)
-tracing (Semicolon p1 p2) =
-  Semicolon
-    (tracing p1)
-    (\xs -> let (x, s) = getTraced xs in
-            Semicolon
-              (tracing (p2 x))
-              (\yt -> let (y, t) = getTraced yt in
-                      Ret $ makeTraced (y, appendTrace s t)))
+-- These two functions correspond to the paper's transformation
+-- tracing from P(A) to P(A x Tracing).
+tracing :: (Trace trace key elt traced wtraced, Distr distr,
+            BaseType a) =>
+           GenVal key distr elt a ->
+           GenVal key distr traced a
+tracing (Sample k dist deriv) =
+  Evaluate
+    (Sample k (pushForward emptyTraced dist) (extendByZero deriv))
+    (Gen $ \xt -> let (x, _) = getTraced xt in
+                  Ret $ makeTraced
+                          (x, kvTrace k (Traced $ show x)))
+tracing (Ret x) = Ret $ emptyTraced x
+tracing (Evaluate x f) =
+  Evaluate
+    (tracing x)
+    (Gen $ \xs -> let (_, s) = getTraced xs in
+                  Evaluate
+                    (Evaluate (Ret xs) (tracing' f))
+                    (Gen $ \yt -> let (y, t) = getTraced yt in
+                                  Ret $ makeTraced
+                                          (y, appendTrace s t)))
 
--- Defines infer_t from P(A) to P(A x Tracing x R^+)
+tracing' :: (Trace trace key elt traced wtraced, Distr distr,
+             BaseType a, BaseType b) =>
+            GenFn key distr elt a b ->
+            GenFn key distr traced a b
+tracing' (Gen f) = Gen $ tracing . f . unTrace
+tracing' (Compose f1 f2) =
+  Compose
+    (tracing' f1)
+    (Gen $ \xs -> let (_, s) = getTraced xs in
+                  Evaluate
+                    (Evaluate (Ret xs) (tracing' f2))
+                    (Gen $ \yt -> let (y, t) = getTraced yt in
+                                  Ret $ makeTraced
+                                          (y, appendTrace s t)))
+
+-- These two functions correspond to the paper's transformation
+-- infer_t from P(A) to P(A x Tracing x R^+)
 infer :: (Trace trace key elt traced wtraced, Distr distr,
-          Eq key) =>
-         trace a -> GenFn key distr elt a ->
-         GenFn key distr wtraced a
-infer tr (Sample k dist score) =
-  Semicolon
+          BaseType a) =>
+         trace -> GenVal key distr elt a ->
+         GenVal key distr wtraced a
+infer tr (Sample k dist deriv) =
+  Evaluate
     (case traceValue tr k of
-       Observe x -> Ret $ makeWTraced (x, emptyTrace, score x)
-       Intervene x -> Ret $ makeWTraced (x, emptyTrace, 1.0)
+       Observe x -> Ret $ let x' = maybe undefined id $ fromDynamic x in
+                          makeWTraced (x', emptyTrace, deriv x')
+       Intervene x -> Ret $ let x' = maybe undefined id $ fromDynamic x in
+                            emptyWTraced x'
        _ ->
-         Semicolon
+         Evaluate
            (Sample k
-                   (pushForward
-                      (\x -> makeWTraced (x, emptyTrace, 1.0))
-                      dist)
-                   (extendByZeroW score))
-           (\xtw -> let (x, _, _) = getWTraced xtw in
-                    Ret $ makeWTraced (x, emptyTrace, 1.0)))
-    (\ytw -> let (y, _, w) = getWTraced ytw in
-             Ret $ makeWTraced (y, kvTrace k (Traced y), w))
-infer tr (Ret x) = Ret $ makeWTraced (x, emptyTrace, 1.0)
-infer tr (Semicolon p1 p2) =
-  Semicolon
-    (infer tr p1)
-    (\xsv -> let (x, s, v) = getWTraced xsv in
-             Semicolon
-               (infer tr (p2 x))
-               (\ytw -> let (y, t, w) = getWTraced ytw in
-                        Ret $ makeWTraced
-                                (y, appendTrace s t, (v * w))))
+                   (pushForward emptyWTraced dist)
+                   (extendByZeroW deriv))
+           (Gen $ \xtw -> let (x, _, _) = getWTraced xtw in
+                          Ret $ emptyWTraced x))
+    (Gen $ \ys -> let (y, _, s) = getWTraced ys in
+                  Ret $ makeWTraced
+                          (y, kvTrace k (Traced $ show y), s))
+infer tr (Ret x) = Ret $ emptyWTraced x
+infer tr (Evaluate x f) =
+  Evaluate
+    (infer tr x)
+    (Gen $ \xsv -> let (_, s, v) = getWTraced xsv in
+                   Evaluate
+                     (Evaluate (Ret xsv) (infer' tr f))
+                     (Gen $ \ytw -> let (y, t, w) = getWTraced ytw in
+                                    Ret $ makeWTraced
+                                           (y, appendTrace s t, v * w)))
+
+infer' :: (Trace trace key elt traced wtraced, Distr distr,
+           BaseType a, BaseType b) =>
+          trace -> GenFn key distr elt a b ->
+          GenFn key distr wtraced a b
+infer' tr (Gen f) = Gen $ infer tr . f . unWTrace
+infer' tr (Compose f1 f2) =
+  Compose
+    (infer' tr f1)
+    (Gen $ \xsv -> let (_, s, v) = getWTraced xsv in
+                   Evaluate
+                     (Evaluate (Ret xsv) (infer' tr f2))
+                     (Gen $ \ytw -> let (y, t, w) = getWTraced ytw in
+                                    Ret $ makeWTraced
+                                           (y, appendTrace s t, v * w)))
 
 
 --
@@ -172,29 +261,38 @@ infer tr (Semicolon p1 p2) =
 
 -- Trace-related things
 
-newtype MyElt a = MyElt { myElt :: a } deriving Eq
+newtype MyElt a = MyElt a
+  deriving (Eq, Typeable)
 instance Show a => Show (MyElt a) where
   show (MyElt a) = show a
+instance BaseType a => BaseType (MyElt a) where
+instance EltType MyElt where
 
-newtype MyTrace key a =
-  MyTrace { myTrace :: [(key, TValue (MyElt a))] }
-  deriving Eq
-instance (Show key, Show a) => Show (MyTrace key a) where
+newtype MyTrace key = MyTrace { myTrace :: [(key, TValue)] }
+  deriving (Eq, Typeable)
+instance Show key => Show (MyTrace key) where
   show (MyTrace t) = "Trace " ++ show t
 
 newtype MyTraced key a =
-  MyTraced { myTraced :: (MyElt a, MyTrace key a) }
-  deriving Eq
+  MyTraced { myTraced :: (MyElt a, MyTrace key) }
+  deriving (Eq, Typeable)
 instance (Show key, Show a) => Show (MyTraced key a) where
   show (MyTraced (MyElt x, MyTrace t)) = show (x, t)
+instance (BaseType key, BaseType a) =>
+         BaseType (MyTraced key a) where
+instance BaseType key => EltType (MyTraced key) where
 
 newtype MyWTraced key a =
-  MyWTraced { myWTraced :: (MyElt a, MyTrace key a, Double) }
-  deriving Eq
+  MyWTraced { myWTraced :: (MyElt a, MyTrace key, Double) }
+  deriving (Eq, Typeable)
 instance (Show key, Show a) => Show (MyWTraced key a) where
   show (MyWTraced (MyElt x, MyTrace t, w)) = show (x, t, w)
+instance (BaseType key, BaseType a) =>
+         BaseType (MyWTraced key a) where
+instance BaseType key => EltType (MyWTraced key) where
 
-instance Trace (MyTrace key)
+instance BaseType key =>
+         Trace (MyTrace key)
                key
                MyElt
                (MyTraced key)
@@ -208,15 +306,18 @@ instance Trace (MyTrace key)
   getWTraced = myWTraced
   makeWTraced = MyWTraced
 
--- Example/omputation-related things
+-- Example/computation-related things
 
-data MySet = Tails | Heads deriving (Show, Eq)
+instance BaseType Int where
+
+data MySet = Tails | Heads deriving (Eq, Show, Typeable)
+instance BaseType MySet where
 myNot Tails = Heads
 myNot Heads = Tails
 
-input :: GenFn key distr MyElt MySet
+input :: GenVal key distr MyElt MySet
 input = Ret $ MyElt Tails
-input' :: Distr distr => GenFn Int distr MyElt MySet
+input' :: Distr distr => GenVal Int distr MyElt MySet
 input' = Sample (0 :: Int)
                 (dirac $ MyElt Tails)
                 (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
@@ -229,17 +330,17 @@ drunkenNotScore x (MyElt y) =
   else if y == myNot x then 0.9
   else 0.0 -- Not reachable but syntactically required
 drunkenNot :: (MySet -> distr MyElt MySet) -> key ->
-              MyElt MySet -> GenFn key distr MyElt MySet
-drunkenNot d k (MyElt x) = Sample k (d x) (drunkenNotScore x)
+              GenFn key distr MyElt MySet MySet
+drunkenNot d k = Gen $ \(MyElt x) -> Sample k (d x) (drunkenNotScore x)
 
-tObs = MyTrace [(0 :: Int, Observe (MyElt Heads))]
-tInt = MyTrace [(0 :: Int, Intervene (MyElt Heads))]
+tObs = MyTrace [(0 :: Int, Observe $ toDyn (MyElt Heads))]
+tInt = MyTrace [(0 :: Int, Intervene $ toDyn (MyElt Heads))]
 
 
 --
 -- Example 1:
 -- Measure-theoretically, tracking point masses in the support of the
--- distribution
+-- distribution.
 --
 
 squashDiracs :: Eq a => [(a, Double)] -> [(a, Double)]
@@ -274,23 +375,29 @@ instance Distr Diracs where
         (diracs d1)
 
 tracing1 = tracing
-  :: GenFn Int Diracs MyElt MySet ->
-     GenFn Int Diracs (MyTraced Int) MySet
+  :: GenVal Int Diracs MyElt MySet ->
+     GenVal Int Diracs (MyTraced Int) MySet
 infer1 = infer
-  :: MyTrace Int MySet -> GenFn Int Diracs MyElt MySet ->
-     GenFn Int Diracs (MyWTraced Int) MySet
+  :: MyTrace Int -> GenVal Int Diracs MyElt MySet ->
+     GenVal Int Diracs (MyWTraced Int) MySet
 
-input1 = input :: GenFn Int Diracs MyElt MySet
-input1' = input' :: GenFn Int Diracs MyElt MySet
+input1 = input :: GenVal Int Diracs MyElt MySet
+input1' = input' :: GenVal Int Diracs MyElt MySet
 drunkenNot1 = drunkenNot (\x -> Diracs $ drunkenNotList x)
 computed1 =
-  Semicolon (Semicolon input1 (drunkenNot1 1)) (drunkenNot1 2)
+  Evaluate (Evaluate input1 (drunkenNot1 1)) (drunkenNot1 2)
 computed1' =
-  Semicolon (Semicolon input1' (drunkenNot1 1)) (drunkenNot1 2)
+  Evaluate (Evaluate input1' (drunkenNot1 1)) (drunkenNot1 2)
+computed1'' =
+  Evaluate input1 $ Compose (drunkenNot1 1) (drunkenNot1 2)
+computed1''' =
+  Evaluate input1' $ Compose (drunkenNot1 1) (drunkenNot1 2)
 
 -- try:
 -- > runGen computed1
 -- > runGen computed1'
+-- > runGen computed1''
+-- > runGen computed1'''
 -- > runGen $ tracing1 computed1
 -- > runGen $ tracing1 computed1'
 -- > runGen $ infer1 tObs computed1'
@@ -304,30 +411,36 @@ computed1' =
 --
 
 -- Sampling procedures are functions with one value, `() -> elt a`,
--- otherwise written `(->) () (elt a)`:
+-- otherwise written `(->) () (elt a)`.
 type DSampler = MDistr ((->) ())
 instance Show (elt a) => Show (DSampler elt a) where
   show s = "() -> " ++ show (mDistr s ())
 
 tracing2 = tracing
-  :: GenFn Int DSampler MyElt MySet ->
-     GenFn Int DSampler (MyTraced Int) MySet
+  :: GenVal Int DSampler MyElt MySet ->
+     GenVal Int DSampler (MyTraced Int) MySet
 infer2 = infer
-  :: MyTrace Int MySet -> GenFn Int DSampler MyElt MySet ->
-     GenFn Int DSampler (MyWTraced Int) MySet
+  :: MyTrace Int -> GenVal Int DSampler MyElt MySet ->
+     GenVal Int DSampler (MyWTraced Int) MySet
 
-input2 = input :: GenFn Int DSampler MyElt MySet
-input2' = input' :: GenFn Int DSampler MyElt MySet
+input2 = input :: GenVal Int DSampler MyElt MySet
+input2' = input' :: GenVal Int DSampler MyElt MySet
 -- This is especially not stochastic:
 drunkenNot2 = drunkenNot (\x -> MDistr (\_ -> MyElt $ myNot x))
 computed2 =
-  Semicolon (Semicolon input2 (drunkenNot2 1)) (drunkenNot2 2)
+  Evaluate (Evaluate input2 (drunkenNot2 1)) (drunkenNot2 2)
 computed2' =
-  Semicolon (Semicolon input2' (drunkenNot2 1)) (drunkenNot2 2)
+  Evaluate (Evaluate input2' (drunkenNot2 1)) (drunkenNot2 2)
+computed2'' =
+  Evaluate input2 $ Compose (drunkenNot2 1) (drunkenNot2 2)
+computed2''' =
+  Evaluate input2' $ Compose (drunkenNot2 1) (drunkenNot2 2)
 
 -- try:
 -- > runGen computed2
 -- > runGen computed2'
+-- > runGen computed2''
+-- > runGen computed2'''
 -- > runGen $ tracing2 computed2
 -- > runGen $ tracing2 computed2'
 -- > runGen $ infer2 tObs computed2'
@@ -340,27 +453,31 @@ computed2' =
 --
 
 -- The Rand monad carries along the state of a pseudorandom number
--- generator seed for us:
+-- generator seed for us.
 type RSampler g = MDistr (Rand g)
--- This plays the role of the Show instance:
+-- This plays the role of the Show instance.
 rsample :: RSampler StdGen elt a -> IO (elt a)
 rsample = evalRandIO . mDistr
 
 tracing3 = tracing
-  :: GenFn Int (RSampler StdGen) MyElt MySet ->
-     GenFn Int (RSampler StdGen) (MyTraced Int) MySet
+  :: GenVal Int (RSampler StdGen) MyElt MySet ->
+     GenVal Int (RSampler StdGen) (MyTraced Int) MySet
 infer3 = infer
-  :: MyTrace Int MySet -> GenFn Int (RSampler StdGen) MyElt MySet ->
-     GenFn Int (RSampler StdGen) (MyWTraced Int) MySet
+  :: MyTrace Int -> GenVal Int (RSampler StdGen) MyElt MySet ->
+     GenVal Int (RSampler StdGen) (MyWTraced Int) MySet
 
-input3 = input :: GenFn Int (RSampler StdGen) MyElt MySet
-input3' = input' :: GenFn Int (RSampler StdGen) MyElt MySet
+input3 = input :: GenVal Int (RSampler StdGen) MyElt MySet
+input3' = input' :: GenVal Int (RSampler StdGen) MyElt MySet
 drunkenNot3 =
   drunkenNot (\x -> MDistr . fromList $ drunkenNotList x)
 computed3 =
-  Semicolon (Semicolon input3 (drunkenNot3 1)) (drunkenNot3 2)
+  Evaluate (Evaluate input3 (drunkenNot3 1)) (drunkenNot3 2)
 computed3' =
-  Semicolon (Semicolon input3' (drunkenNot3 1)) (drunkenNot3 2)
+  Evaluate (Evaluate input3' (drunkenNot3 1)) (drunkenNot3 2)
+computed3'' =
+  Evaluate input3 $ Compose (drunkenNot3 1) (drunkenNot3 2)
+computed3''' =
+  Evaluate input3' $ Compose (drunkenNot3 1) (drunkenNot3 2)
 
 test3 n = do
   flips <- sequence . (replicate n) . rsample . runGen $ computed3
@@ -371,6 +488,8 @@ test3 n = do
 -- try:
 -- > rsample $ runGen computed3
 -- > rsample $ runGen computed3'
+-- > rsample $ runGen computed3''
+-- > rsample $ runGen computed3'''
 -- > rsample . runGen $ tracing3 computed3
 -- > rsample . runGen $ tracing3 computed3'
 -- > rsample . runGen $ infer3 tObs computed3'
