@@ -46,6 +46,10 @@ import Control.Monad.Random
 -- The variable `a` here is either A from the paper, or f(A) below.
 class (Eq a, Show a, Typeable a) => BaseType a where
 
+class BaseType key => Key key where
+  nullKey :: key
+  isNullKey :: key -> Bool
+
 -- Describes the operations on A carrying over to a parametric type
 -- f(A) in the world of the paper.
 class (forall a. BaseType a => BaseType (elt a), Typeable elt) =>
@@ -70,7 +74,7 @@ instance Monad m => Distr (MDistr m) where
 
 -- Defines generative values in terms of f(A) and R(f(A)).
 data GenVal key distr elt a where
-  Sample :: (EltType elt, BaseType a) =>
+  Sample :: (Key key, EltType elt, BaseType a) =>
     key -> (distr elt a) -> (elt a -> Double)
     -> GenVal key distr elt a
   Ret :: (EltType elt, BaseType a) =>
@@ -94,13 +98,14 @@ data GenFn key distr elt a b where
 -- together into one type.
 
 -- Defines the "Gen" interpretation [[ ]]_g from P(f(A)) to R(f(A)).
-runGen :: (Distr distr, EltType elt, BaseType a) =>
+runGen :: (Key key, Distr distr, EltType elt, BaseType a) =>
           GenVal key distr elt a -> distr elt a
 runGen (Sample k sample score) = sample
 runGen (Ret x) = dirac x
 runGen (Evaluate x f) = mixture (runGen x) (runGen' f)
 
-runGen' :: (Distr distr, EltType elt, BaseType a, BaseType b) =>
+runGen' :: (Key key, Distr distr,
+            EltType elt, BaseType a, BaseType b) =>
            GenFn key distr elt a b -> elt a -> distr elt b
 runGen' (Gen f) = runGen . f
 runGen' (Compose f1 f2) = \x -> mixture (runGen' f1 $ x) (runGen' f2)
@@ -125,7 +130,7 @@ instance Eq TValue where
 --   * `elt a` corresponds to f(A) = A,
 --   * `traced a` corresponds to f(A) = A x Trace, and
 --   * `wtraced a` corresponds to f(A) = A x Trace x R^+.
-class (Eq trace, BaseType key,
+class (Eq trace, Key key,
        EltType elt, EltType traced, EltType wtraced) =>
       Trace trace key elt traced wtraced |
       trace -> key elt traced wtraced,
@@ -173,8 +178,10 @@ tracing (Sample k dist deriv) =
   Evaluate
     (Sample k (pushForward emptyTraced dist) (extendByZero deriv))
     (Gen $ \xt -> let (x, _) = getTraced xt in
-                  Ret $ makeTraced
-                          (x, kvTrace k (Traced $ show x)))
+                  Ret $ if isNullKey k
+                        then emptyTraced x
+                        else makeTraced
+                               (x, kvTrace k (Traced $ show x)))
 tracing (Ret x) = Ret $ emptyTraced x
 tracing (Evaluate x f) =
   Evaluate
@@ -222,8 +229,10 @@ infer tr (Sample k dist deriv) =
            (Gen $ \xtw -> let (x, _, _) = getWTraced xtw in
                           Ret $ emptyWTraced x))
     (Gen $ \ys -> let (y, _, s) = getWTraced ys in
-                  Ret $ makeWTraced
-                          (y, kvTrace k (Traced $ show y), s))
+                  Ret $ if isNullKey k
+                        then emptyWTraced y
+                        else makeWTraced
+                               (y, kvTrace k (Traced $ show y), s))
 infer tr (Ret x) = Ret $ emptyWTraced x
 infer tr (Evaluate x f) =
   Evaluate
@@ -291,7 +300,7 @@ instance (BaseType key, BaseType a) =>
          BaseType (MyWTraced key a) where
 instance BaseType key => EltType (MyWTraced key) where
 
-instance BaseType key =>
+instance Key key =>
          Trace (MyTrace key)
                key
                MyElt
@@ -309,13 +318,16 @@ instance BaseType key =>
 -- Example/computation-related things
 
 instance BaseType Int where
+instance Key Int where
+  nullKey = -1
+  isNullKey = (== nullKey)
 
 data MySet = Tails | Heads deriving (Eq, Show, Typeable)
 instance BaseType MySet where
 myNot Tails = Heads
 myNot Heads = Tails
 
-input :: GenVal key distr MyElt MySet
+input :: (Key key, Distr distr) => GenVal key distr MyElt MySet
 input = Ret $ MyElt Tails
 input' :: Distr distr => GenVal Int distr MyElt MySet
 input' = Sample (0 :: Int)
@@ -329,7 +341,8 @@ drunkenNotScore x (MyElt y) =
   if y == x then 0.1
   else if y == myNot x then 0.9
   else 0.0 -- Not reachable but syntactically required
-drunkenNot :: (MySet -> distr MyElt MySet) -> key ->
+drunkenNot :: (Key key, Distr distr) =>
+              (MySet -> distr MyElt MySet) -> key ->
               GenFn key distr MyElt MySet MySet
 drunkenNot d k = Gen $ \(MyElt x) -> Sample k (d x) (drunkenNotScore x)
 
