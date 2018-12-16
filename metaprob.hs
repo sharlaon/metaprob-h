@@ -75,10 +75,10 @@ instance Monad m => Distr (MDistr m) where
 -- Defines generative values in terms of f(A) and R(f(A)).
 data GenVal key distr elt a where
   Sample :: (Key key, EltType elt, BaseType a) =>
-    key -> (distr elt a) -> (elt a -> Double)
+    key -> distr elt a -> (elt a -> Double)
     -> GenVal key distr elt a
   Evaluate :: (EltType elt, BaseType c, BaseType a) =>
-    (GenVal key distr elt c) -> (GenFn key distr elt c a)
+    GenVal key distr elt c -> GenFn key distr elt c a
     -> GenVal key distr elt a
 
 kronecker :: (Eq a) => a -> a -> Double
@@ -93,7 +93,7 @@ data GenFn key distr elt a b where
     (elt a -> GenVal key distr elt b)
     -> GenFn key distr elt a b
   Compose :: (EltType elt, BaseType a, BaseType c, BaseType b) =>
-    (GenFn key distr elt a c) -> (GenFn key distr elt c b)
+    GenFn key distr elt a c -> GenFn key distr elt c b
     -> GenFn key distr elt a b
 
 -- "Generative procedures" P(f(A)) as in the paper morally consist of
