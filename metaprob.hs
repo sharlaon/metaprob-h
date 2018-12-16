@@ -77,12 +77,15 @@ data GenVal key distr elt a where
   Sample :: (Key key, EltType elt, BaseType a) =>
     key -> (distr elt a) -> (elt a -> Double)
     -> GenVal key distr elt a
-  Ret :: (EltType elt, BaseType a) =>
-    (elt a)
-    -> GenVal key distr elt a
   Evaluate :: (EltType elt, BaseType c, BaseType a) =>
     (GenVal key distr elt c) -> (GenFn key distr elt c a)
     -> GenVal key distr elt a
+
+kronecker :: (Eq a) => a -> a -> Double
+kronecker x y = if x == y then 1.0 else 0.0
+ret :: (Key key, Distr distr, EltType elt, BaseType a) =>
+       elt a -> GenVal key distr elt a
+ret x = Sample nullKey (dirac x) (kronecker x)
 
 -- Defines generative functions, similarly.
 data GenFn key distr elt a b where
@@ -101,7 +104,6 @@ data GenFn key distr elt a b where
 runGen :: (Key key, Distr distr, EltType elt, BaseType a) =>
           GenVal key distr elt a -> distr elt a
 runGen (Sample k sample score) = sample
-runGen (Ret x) = dirac x
 runGen (Evaluate x f) = mixture (runGen x) (runGen' f)
 
 runGen' :: (Key key, Distr distr,
@@ -178,19 +180,18 @@ tracing (Sample k dist deriv) =
   Evaluate
     (Sample k (pushForward emptyTraced dist) (extendByZero deriv))
     (Gen $ \xt -> let (x, _) = getTraced xt in
-                  Ret $ if isNullKey k
+                  ret $ if isNullKey k
                         then emptyTraced x
                         else makeTraced
                                (x, kvTrace k (Traced $ show x)))
-tracing (Ret x) = Ret $ emptyTraced x
 tracing (Evaluate x f) =
   Evaluate
     (tracing x)
     (Gen $ \xs -> let (_, s) = getTraced xs in
                   Evaluate
-                    (Evaluate (Ret xs) (tracing' f))
+                    (Evaluate (ret xs) (tracing' f))
                     (Gen $ \yt -> let (y, t) = getTraced yt in
-                                  Ret $ makeTraced
+                                  ret $ makeTraced
                                           (y, appendTrace s t)))
 
 tracing' :: (Trace trace key elt traced wtraced, Distr distr,
@@ -203,9 +204,9 @@ tracing' (Compose f1 f2) =
     (tracing' f1)
     (Gen $ \xs -> let (_, s) = getTraced xs in
                   Evaluate
-                    (Evaluate (Ret xs) (tracing' f2))
+                    (Evaluate (ret xs) (tracing' f2))
                     (Gen $ \yt -> let (y, t) = getTraced yt in
-                                  Ret $ makeTraced
+                                  ret $ makeTraced
                                           (y, appendTrace s t)))
 
 -- These two functions correspond to the paper's transformation
@@ -217,9 +218,9 @@ infer :: (Trace trace key elt traced wtraced, Distr distr,
 infer tr (Sample k dist deriv) =
   Evaluate
     (case traceValue tr k of
-       Observe x -> Ret $ let x' = maybe undefined id $ fromDynamic x in
+       Observe x -> ret $ let x' = maybe undefined id $ fromDynamic x in
                           makeWTraced (x', emptyTrace, deriv x')
-       Intervene x -> Ret $ let x' = maybe undefined id $ fromDynamic x in
+       Intervene x -> ret $ let x' = maybe undefined id $ fromDynamic x in
                             emptyWTraced x'
        _ ->
          Evaluate
@@ -227,21 +228,20 @@ infer tr (Sample k dist deriv) =
                    (pushForward emptyWTraced dist)
                    (extendByZeroW deriv))
            (Gen $ \xtw -> let (x, _, _) = getWTraced xtw in
-                          Ret $ emptyWTraced x))
+                          ret $ emptyWTraced x))
     (Gen $ \ys -> let (y, _, s) = getWTraced ys in
-                  Ret $ if isNullKey k
+                  ret $ if isNullKey k
                         then emptyWTraced y
                         else makeWTraced
                                (y, kvTrace k (Traced $ show y), s))
-infer tr (Ret x) = Ret $ emptyWTraced x
 infer tr (Evaluate x f) =
   Evaluate
     (infer tr x)
     (Gen $ \xsv -> let (_, s, v) = getWTraced xsv in
                    Evaluate
-                     (Evaluate (Ret xsv) (infer' tr f))
+                     (Evaluate (ret xsv) (infer' tr f))
                      (Gen $ \ytw -> let (y, t, w) = getWTraced ytw in
-                                    Ret $ makeWTraced
+                                    ret $ makeWTraced
                                            (y, appendTrace s t, v * w)))
 
 infer' :: (Trace trace key elt traced wtraced, Distr distr,
@@ -254,9 +254,9 @@ infer' tr (Compose f1 f2) =
     (infer' tr f1)
     (Gen $ \xsv -> let (_, s, v) = getWTraced xsv in
                    Evaluate
-                     (Evaluate (Ret xsv) (infer' tr f2))
+                     (Evaluate (ret xsv) (infer' tr f2))
                      (Gen $ \ytw -> let (y, t, w) = getWTraced ytw in
-                                    Ret $ makeWTraced
+                                    ret $ makeWTraced
                                            (y, appendTrace s t, v * w)))
 
 
@@ -328,7 +328,7 @@ myNot Tails = Heads
 myNot Heads = Tails
 
 input :: (Key key, Distr distr) => GenVal key distr MyElt MySet
-input = Ret $ MyElt Tails
+input = ret $ MyElt Tails
 input' :: Distr distr => GenVal Int distr MyElt MySet
 input' = Sample (0 :: Int)
                 (dirac $ MyElt Tails)
