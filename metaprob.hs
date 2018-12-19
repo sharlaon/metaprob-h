@@ -171,8 +171,8 @@ class (Eq trace, Key key,
   makeTraced :: (elt a, trace) -> traced a
   getWTraced :: wtraced a -> (elt a, trace, Double)
   makeWTraced :: (elt a, trace, Double) -> wtraced a
-wfst :: (a, b, c) -> a
-wfst (x, _, _) = x
+fst3 :: (a, b, c) -> a
+fst3 (x, _, _) = x
 extendByZero :: Trace trace key elt traced wtraced =>
                 (elt a -> Double) -> traced a -> Double
 extendByZero f xt = let (x, t) = getTraced xt in
@@ -270,7 +270,7 @@ infer' :: (Trace trace key elt traced wtraced, Distr distr,
            BaseType a, BaseType b) =>
           trace -> GenFn key distr elt a b ->
           GenFn key distr wtraced a b
-infer' tr (Gen f) = Gen $ infer tr . f . wfst . getWTraced
+infer' tr (Gen f) = Gen $ infer tr . f . fst3 . getWTraced
 infer' tr (Compose f1 f2) =
   Compose
     (infer' tr f1)
@@ -516,13 +516,13 @@ test3 n = do
   flips <- sequence . (replicate n) . rsample . runGen $ computed3
   let tails = filter (== MyElt Tails) flips
   -- Output will be ~0.82:
-  putStrLn . show $ fromIntegral (length tails) / fromIntegral n
+  print $ fromIntegral (length tails) / fromIntegral n
 
 -- try:
--- > rsample $ runGen computed3
--- > rsample $ runGen computed3'
--- > rsample $ runGen computed3''
--- > rsample $ runGen computed3'''
+-- > rsample . runGen $ computed3
+-- > rsample . runGen $ computed3'
+-- > rsample . runGen $ computed3''
+-- > rsample . runGen $ computed3'''
 -- > rsample . runGen $ tracing3 computed3
 -- > rsample . runGen $ tracing3 computed3'
 -- > rsample . runGen $ infer3 tObs computed3'
