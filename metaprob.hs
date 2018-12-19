@@ -57,6 +57,13 @@ class (forall a. BaseType a => BaseType (elt a), Typeable elt) =>
       EltType elt where
 
 -- Describes distributions R(f(A)) on f(A).
+-- We assume the following laws hold:
+--   * Unit:
+--     mixture (dirac x) d = d a
+--     mixture d dirac = d
+--   * Associativity:
+--     mixture (mixture d1 d2) d3
+--       = mixture d1 (\x -> mixture (d2 x) d3)
 class Distr distr where
   pushForward :: (EltType elt, EltType elt', BaseType a) =>
                  (elt a -> elt' a) -> distr elt a -> distr elt' a
@@ -67,6 +74,7 @@ class Distr distr where
              distr elt a -> (elt a -> distr elt b) -> distr elt b
 
 -- A distribution is morally just a monad applied to the element type.
+-- The monad laws are the distribution laws.
 newtype MDistr m elt a = MDistr { mDistr :: m (elt a) }
 instance Monad m => Distr (MDistr m) where
   pushForward f = MDistr . fmap f . mDistr
@@ -111,8 +119,25 @@ runGen' :: (Key key, Distr distr,
             EltType elt, BaseType a, BaseType b) =>
            GenFn key distr elt a b -> elt a -> distr elt b
 runGen' (Gen f) = runGen . f
-runGen' (Compose f1 f2) = \x -> mixture (runGen' f1 $ x) (runGen' f2)
+runGen' (Compose f1 f2) = \x -> mixture (runGen' f1 x) (runGen' f2)
 
+-- The data structure built from `GenVal` and `GenFn` is *syntactic*,
+-- while `runGen` is a *semantic* intepretation.  Under the
+-- distribution laws, the semantics obeys:
+--   * Unit:
+--     runGen $ Evaluate (Sample k (dirac x) s) f
+--       = runGen' f x
+--     runGen $ Evaluate x (Gen $ \y -> Sample (k y) (dirac y) (s y))
+--       = runGen x
+--   * Associativity:
+--     runGen' $ Compose (Compose f1 f2) f3
+--       = runGen' $ Compose f1 (Compose f2 f3)
+--     runGen $ Evaluate (Evaluate x f1) f2
+--       = runGen $ Evaluate x (Compose f1 f2)
+--   * Reconstruction (a tautology):
+--     runGen $ Sample k (runGen x) s = runGen x
+--     runGen' $ Gen $ \y -> Sample (k y) (runGen' f y) (s y)
+--       = runGen' f
 
 data TValue =
   TNone | Traced String | Observe Dynamic | Intervene Dynamic
