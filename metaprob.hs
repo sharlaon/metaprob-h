@@ -156,9 +156,9 @@ instance Eq TValue where
 
 -- Describes the type Trace of traces.
 class (Key key, Eq trace) => Trace key trace | trace -> key where
-  getTrace :: trace -> [(key, TValue)]
-  emptyTrace :: trace
-  kvTrace :: key -> TValue -> trace
+  getTrace    :: trace -> [(key, TValue)]
+  emptyTrace  :: trace
+  kvTrace     :: key -> TValue -> trace
   appendTrace :: trace -> trace -> trace
 traceValue :: Trace key trace => trace -> key -> TValue
 traceValue t k = let res = filter ((== k) . fst) (getTrace t)
@@ -167,9 +167,8 @@ traceValue t k = let res = filter ((== k) . fst) (getTrace t)
 -- In this context, `elt a` corresponds to f(A) = A, and `traced a`
 -- corresponds to f(A) = A x Trace.
 class (Trace key trace, EltType elt, EltType traced) =>
-      Traced key trace elt traced
-      | traced -> trace elt where
-  getTraced :: traced a -> (elt a, trace)
+      Traced key trace elt traced | traced -> trace elt where
+  getTraced  :: traced a -> (elt a, trace)
   makeTraced :: (elt a, trace) -> traced a
 extendByZero :: Traced key trace elt traced =>
                 (elt a -> Double) -> traced a -> Double
@@ -178,9 +177,8 @@ extendByZero f xt = let (x, t) = getTraced xt
 
 -- Similarly, here `wtraced a` corresponds to A x Trace x R^+.
 class (Trace key trace, EltType elt, EltType wtraced) =>
-      WTraced key trace elt wtraced
-      | wtraced -> trace elt where
-  getWTraced :: wtraced a -> (elt a, trace, Double)
+      WTraced key trace elt wtraced | wtraced -> trace elt where
+  getWTraced  :: wtraced a -> (elt a, trace, Double)
   makeWTraced :: (elt a, trace, Double) -> wtraced a
 extendByZeroW :: WTraced key trace elt wtraced =>
                  (elt a -> Double) -> wtraced a -> Double
@@ -316,7 +314,7 @@ instance (Show key, Show a) => Show (MyTraced key a) where
   show (MyTraced (MyElt x, MyTrace t)) = show (x, t)
 instance (BaseType key, BaseType a) =>
          BaseType (MyTraced key a) where
-instance BaseType key => EltType (MyTraced key) where
+instance Key key => EltType (MyTraced key) where
 instance Key key =>
          Traced key (MyTrace key) MyElt (MyTraced key) where
   getTraced   = myTraced
@@ -329,7 +327,7 @@ instance (Show key, Show a) => Show (MyWTraced key a) where
   show (MyWTraced (MyElt x, MyTrace t, w)) = show (x, t, w)
 instance (BaseType key, BaseType a) =>
          BaseType (MyWTraced key a) where
-instance BaseType key => EltType (MyWTraced key) where
+instance Key key => EltType (MyWTraced key) where
 instance Key key =>
          WTraced key (MyTrace key) MyElt (MyWTraced key) where
   getWTraced  = myWTraced
