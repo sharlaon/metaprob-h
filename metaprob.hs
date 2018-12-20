@@ -186,8 +186,6 @@ extendByZeroW :: WTraced key trace elt wtraced =>
                  (elt a -> Double) -> wtraced a -> Double
 extendByZeroW f xtw = let (x, t, _) = getWTraced xtw
                       in if null $ getTrace t then f x else 0.0
-fst3 :: (a, b, c) -> a
-fst3 (x, _, _) = x
 
 -- These two functions correspond to the paper's transformation
 -- tracing from P(A) to P(A x Tracing).
@@ -270,7 +268,8 @@ infer' :: (WTraced key trace elt wtraced, Distr distr,
            BaseType a, BaseType b) =>
           trace -> GenFn key distr elt a b ->
           GenFn key distr wtraced a b
-infer' tr (Gen f) = Gen $ infer tr . f . fst3 . getWTraced
+infer' tr (Gen f) = Gen $
+  infer tr . f . (\(x, _, _) -> x) . getWTraced
 infer' tr (Compose f1 f2) =
   Compose
     (infer' tr f1)
