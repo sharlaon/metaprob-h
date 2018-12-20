@@ -139,6 +139,7 @@ runGen' (Compose f1 f2) = \x -> mixture (runGen' f1 x) (runGen' f2)
 --     runGen' $ Gen $ \y -> Sample (k y) (runGen' f y) (s y)
 --       = runGen' f
 
+-- Describes the entries recorded by a trace structure.
 data TValue =
   TNone | Traced String | Observe Dynamic | Intervene Dynamic
   deriving Show
@@ -153,42 +154,44 @@ instance Eq TValue where
   -- simplify mixture distributions when the values are traced.
   _ == _         = False
 
--- In the context of `class Trace`,
---   * `trace` corrsponds to Trace,
---   * `elt a` corresponds to f(A) = A,
---   * `traced a` corresponds to f(A) = A x Trace, and
---   * `wtraced a` corresponds to f(A) = A x Trace x R^+.
-class (Eq trace, Key key,
-       EltType elt, EltType traced, EltType wtraced) =>
-      Trace trace key elt traced wtraced
-      | trace -> key elt traced wtraced,
-        traced -> trace, wtraced -> traced where
+-- Describes the type Trace of traces.
+class (Key key, Eq trace) => Trace key trace | trace -> key where
   getTrace :: trace -> [(key, TValue)]
   emptyTrace :: trace
   kvTrace :: key -> TValue -> trace
   appendTrace :: trace -> trace -> trace
-  getTraced :: traced a -> (elt a, trace)
-  makeTraced :: (elt a, trace) -> traced a
-  getWTraced :: wtraced a -> (elt a, trace, Double)
-  makeWTraced :: (elt a, trace, Double) -> wtraced a
-fst3 :: (a, b, c) -> a
-fst3 (x, _, _) = x
-extendByZero :: Trace trace key elt traced wtraced =>
-                (elt a -> Double) -> traced a -> Double
-extendByZero f xt = let (x, t) = getTraced xt
-                    in if null $ getTrace t then f x else 0.0
-extendByZeroW :: Trace trace key elt traced wtraced =>
-                 (elt a -> Double) -> wtraced a -> Double
-extendByZeroW f xtw = let (x, t, _) = getWTraced xtw
-                      in if null $ getTrace t then f x else 0.0
-traceValue :: Trace trace key elt traced wtraced =>
-              trace -> key -> TValue
+traceValue :: Trace key trace => trace -> key -> TValue
 traceValue t k = let res = filter ((== k) . fst) (getTrace t)
                  in if null res then TNone else snd $ head res
 
+-- In this context, `elt a` corresponds to f(A) = A, and `traced a`
+-- corresponds to f(A) = A x Trace.
+class (Trace key trace, EltType elt, EltType traced) =>
+      Traced key trace elt traced
+      | traced -> trace elt where
+  getTraced :: traced a -> (elt a, trace)
+  makeTraced :: (elt a, trace) -> traced a
+extendByZero :: Traced key trace elt traced =>
+                (elt a -> Double) -> traced a -> Double
+extendByZero f xt = let (x, t) = getTraced xt
+                    in if null $ getTrace t then f x else 0.0
+
+-- Similarly, here `wtraced a` corresponds to A x Trace x R^+.
+class (Trace key trace, EltType elt, EltType wtraced) =>
+      WTraced key trace elt wtraced
+      | wtraced -> trace elt where
+  getWTraced :: wtraced a -> (elt a, trace, Double)
+  makeWTraced :: (elt a, trace, Double) -> wtraced a
+extendByZeroW :: WTraced key trace elt wtraced =>
+                 (elt a -> Double) -> wtraced a -> Double
+extendByZeroW f xtw = let (x, t, _) = getWTraced xtw
+                      in if null $ getTrace t then f x else 0.0
+fst3 :: (a, b, c) -> a
+fst3 (x, _, _) = x
+
 -- These two functions correspond to the paper's transformation
 -- tracing from P(A) to P(A x Tracing).
-tracing :: (Trace trace key elt traced wtraced, Distr distr,
+tracing :: (Traced key trace elt traced, Distr distr,
             BaseType a) =>
            GenVal key distr elt a -> GenVal key distr traced a
 tracing (Sample k dist deriv) =
@@ -211,7 +214,7 @@ tracing (Evaluate x f) =
             (Gen $ \yt -> let (y, t) = getTraced yt
                           in ret $ makeTraced (y, appendTrace s t)))
 
-tracing' :: (Trace trace key elt traced wtraced, Distr distr,
+tracing' :: (Traced key trace elt traced, Distr distr,
              BaseType a, BaseType b) =>
             GenFn key distr elt a b -> GenFn key distr traced a b
 tracing' (Gen f) = Gen $ tracing . f . fst . getTraced
@@ -227,7 +230,7 @@ tracing' (Compose f1 f2) =
 
 -- These two functions correspond to the paper's transformation
 -- infer_t from P(A) to P(A x Tracing x R^+)
-infer :: (Trace trace key elt traced wtraced, Distr distr,
+infer :: (WTraced key trace elt wtraced, Distr distr,
           BaseType a) =>
          trace -> GenVal key distr elt a -> GenVal key distr wtraced a
 infer tr (Sample k dist deriv) =
@@ -263,7 +266,7 @@ infer tr (Evaluate x f) =
                let (y, t, w) = getWTraced ytw
                in ret $ makeWTraced (y, appendTrace s t, v * w)))
 
-infer' :: (Trace trace key elt traced wtraced, Distr distr,
+infer' :: (WTraced key trace elt wtraced, Distr distr,
            BaseType a, BaseType b) =>
           trace -> GenFn key distr elt a b ->
           GenFn key distr wtraced a b
@@ -301,6 +304,11 @@ newtype MyTrace key = MyTrace { myTrace :: [(key, TValue)] }
   deriving (Eq, Typeable)
 instance Show key => Show (MyTrace key) where
   show (MyTrace t) = "Trace " ++ show t
+instance Key key => Trace key (MyTrace key) where
+  getTrace    = myTrace
+  emptyTrace  = MyTrace []
+  kvTrace k v = MyTrace [(k, v)]
+  appendTrace (MyTrace t1) (MyTrace t2) = MyTrace (t1 ++ t2)
 
 newtype MyTraced key a =
   MyTraced { myTraced :: (MyElt a, MyTrace key) }
@@ -310,6 +318,10 @@ instance (Show key, Show a) => Show (MyTraced key a) where
 instance (BaseType key, BaseType a) =>
          BaseType (MyTraced key a) where
 instance BaseType key => EltType (MyTraced key) where
+instance Key key =>
+         Traced key (MyTrace key) MyElt (MyTraced key) where
+  getTraced   = myTraced
+  makeTraced  = MyTraced
 
 newtype MyWTraced key a =
   MyWTraced { myWTraced :: (MyElt a, MyTrace key, Double) }
@@ -319,20 +331,8 @@ instance (Show key, Show a) => Show (MyWTraced key a) where
 instance (BaseType key, BaseType a) =>
          BaseType (MyWTraced key a) where
 instance BaseType key => EltType (MyWTraced key) where
-
 instance Key key =>
-         Trace (MyTrace key)
-               key
-               MyElt
-               (MyTraced key)
-               (MyWTraced key)
-         where
-  getTrace    = myTrace
-  emptyTrace  = MyTrace []
-  kvTrace k v = MyTrace [(k, v)]
-  appendTrace (MyTrace t1) (MyTrace t2) = MyTrace (t1 ++ t2)
-  getTraced   = myTraced
-  makeTraced  = MyTraced
+         WTraced key (MyTrace key) MyElt (MyWTraced key) where
   getWTraced  = myWTraced
   makeWTraced = MyWTraced
 
