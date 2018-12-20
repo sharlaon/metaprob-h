@@ -48,7 +48,7 @@ class (Eq a, Show a, Typeable a) => BaseType a where
 
 -- Describes the space of trace keys.
 class BaseType key => Key key where
-  nullKey :: key
+  nullKey   :: key
   isNullKey :: key -> Bool
 
 -- Describes the operations on A carrying over to a parametric type
@@ -67,28 +67,28 @@ class (forall a. BaseType a => BaseType (elt a), Typeable elt) =>
 class Distr distr where
   pushForward :: (EltType elt, EltType elt', BaseType a) =>
                  (elt a -> elt' a) -> distr elt a -> distr elt' a
-  dirac :: (EltType elt, BaseType a) =>
-           elt a -> distr elt a
+  dirac       :: (EltType elt, BaseType a) =>
+                 elt a -> distr elt a
   -- The literature also calls this a "compound" distribution:
-  mixture :: (EltType elt, BaseType a, BaseType b) =>
-             distr elt a -> (elt a -> distr elt b) -> distr elt b
+  mixture     :: (EltType elt, BaseType a, BaseType b) =>
+                 distr elt a -> (elt a -> distr elt b) -> distr elt b
 
 -- A distribution is morally just a monad applied to the element type.
 -- The monad laws are the distribution laws.
 newtype MDistr m elt a = MDistr { mDistr :: m (elt a) }
 instance Monad m => Distr (MDistr m) where
   pushForward f = MDistr . fmap f . mDistr
-  dirac = MDistr . return
+  dirac         = MDistr . return
   mixture s1 s2 = MDistr $ (mDistr s1) >>= (mDistr . s2)
 
 -- Defines generative values in terms of f(A) and R(f(A)).
 data GenVal key distr elt a where
-  Sample :: (Key key, EltType elt, BaseType a) =>
-    key -> distr elt a -> (elt a -> Double)
-    -> GenVal key distr elt a
+  Sample   :: (Key key, EltType elt, BaseType a) =>
+              key -> distr elt a -> (elt a -> Double)
+              -> GenVal key distr elt a
   Evaluate :: (EltType elt, BaseType c, BaseType a) =>
-    GenVal key distr elt c -> GenFn key distr elt c a
-    -> GenVal key distr elt a
+              GenVal key distr elt c -> GenFn key distr elt c a
+              -> GenVal key distr elt a
 
 kronecker :: (Eq a) => a -> a -> Double
 kronecker x y = if x == y then 1.0 else 0.0
@@ -98,12 +98,12 @@ ret x = Sample nullKey (dirac x) (kronecker x)
 
 -- Defines generative functions, similarly.
 data GenFn key distr elt a b where
-  Gen :: (EltType elt, BaseType a, BaseType b) =>
-    (elt a -> GenVal key distr elt b)
-    -> GenFn key distr elt a b
+  Gen     :: (EltType elt, BaseType a, BaseType b) =>
+             (elt a -> GenVal key distr elt b)
+             -> GenFn key distr elt a b
   Compose :: (EltType elt, BaseType a, BaseType c, BaseType b) =>
-    GenFn key distr elt a c -> GenFn key distr elt c b
-    -> GenFn key distr elt a b
+             GenFn key distr elt a c -> GenFn key distr elt c b
+             -> GenFn key distr elt a b
 
 -- In the paper, "Generative procedures" P(f(A)) morally consist of
 -- `GenVal key distr elt a` and `GenFn key distr elt a a` blended
@@ -151,7 +151,7 @@ instance Eq TValue where
   -- The only place this `Eq` intance is used is in squashDiracs, so
   -- in that implementation we simply have a failure to properly
   -- simplify mixture distributions when the values are traced.
-  _ == _ = False
+  _ == _         = False
 
 -- In the context of `class Trace`,
 --   * `trace` corrsponds to Trace,
@@ -160,9 +160,9 @@ instance Eq TValue where
 --   * `wtraced a` corresponds to f(A) = A x Trace x R^+.
 class (Eq trace, Key key,
        EltType elt, EltType traced, EltType wtraced) =>
-      Trace trace key elt traced wtraced |
-      trace -> key elt traced wtraced,
-      traced -> trace, wtraced -> traced where
+      Trace trace key elt traced wtraced
+      | trace -> key elt traced wtraced,
+        traced -> trace, wtraced -> traced where
   getTrace :: trace -> [(key, TValue)]
   emptyTrace :: trace
   kvTrace :: key -> TValue -> trace
@@ -175,23 +175,22 @@ fst3 :: (a, b, c) -> a
 fst3 (x, _, _) = x
 extendByZero :: Trace trace key elt traced wtraced =>
                 (elt a -> Double) -> traced a -> Double
-extendByZero f xt = let (x, t) = getTraced xt in
-                    if null $ getTrace t then f x else 0.0
+extendByZero f xt = let (x, t) = getTraced xt
+                    in if null $ getTrace t then f x else 0.0
 extendByZeroW :: Trace trace key elt traced wtraced =>
                  (elt a -> Double) -> wtraced a -> Double
-extendByZeroW f xtw = let (x, t, _) = getWTraced xtw in
-                      if null $ getTrace t then f x else 0.0
+extendByZeroW f xtw = let (x, t, _) = getWTraced xtw
+                      in if null $ getTrace t then f x else 0.0
 traceValue :: Trace trace key elt traced wtraced =>
               trace -> key -> TValue
-traceValue t k = let res = filter ((== k) . fst) (getTrace t) in
-                 if null res then TNone else snd $ head res
+traceValue t k = let res = filter ((== k) . fst) (getTrace t)
+                 in if null res then TNone else snd $ head res
 
 -- These two functions correspond to the paper's transformation
 -- tracing from P(A) to P(A x Tracing).
 tracing :: (Trace trace key elt traced wtraced, Distr distr,
             BaseType a) =>
-           GenVal key distr elt a ->
-           GenVal key distr traced a
+           GenVal key distr elt a -> GenVal key distr traced a
 tracing (Sample k dist deriv) =
   Evaluate
     (Sample k
@@ -199,47 +198,45 @@ tracing (Sample k dist deriv) =
             (extendByZero deriv))
     (Gen $ \xt ->
        let (x, _) = getTraced xt
-           t = if isNullKey k then emptyTrace
-                              else kvTrace k (Traced $ show x) in
-       ret $ makeTraced (x, t))
+           t      = if isNullKey k then emptyTrace
+                                   else kvTrace k (Traced $ show x)
+       in ret $ makeTraced (x, t))
 tracing (Evaluate x f) =
   Evaluate
     (tracing x)
     (Gen $ \xs ->
-       let (_, s) = getTraced xs in
-       Evaluate
-         (Evaluate (ret xs) (tracing' f))
-         (Gen $ \yt -> let (y, t) = getTraced yt in
-                       ret $ makeTraced (y, appendTrace s t)))
+       let (_, s) = getTraced xs
+       in Evaluate
+            (Evaluate (ret xs) (tracing' f))
+            (Gen $ \yt -> let (y, t) = getTraced yt
+                          in ret $ makeTraced (y, appendTrace s t)))
 
 tracing' :: (Trace trace key elt traced wtraced, Distr distr,
              BaseType a, BaseType b) =>
-            GenFn key distr elt a b ->
-            GenFn key distr traced a b
+            GenFn key distr elt a b -> GenFn key distr traced a b
 tracing' (Gen f) = Gen $ tracing . f . fst . getTraced
 tracing' (Compose f1 f2) =
   Compose
     (tracing' f1)
     (Gen $ \xs ->
-       let (_, s) = getTraced xs in
-         Evaluate
-           (Evaluate (ret xs) (tracing' f2))
-           (Gen $ \yt -> let (y, t) = getTraced yt in
-                         ret $ makeTraced (y, appendTrace s t)))
+       let (_, s) = getTraced xs
+       in Evaluate
+            (Evaluate (ret xs) (tracing' f2))
+            (Gen $ \yt -> let (y, t) = getTraced yt
+                          in ret $ makeTraced (y, appendTrace s t)))
 
 -- These two functions correspond to the paper's transformation
 -- infer_t from P(A) to P(A x Tracing x R^+)
 infer :: (Trace trace key elt traced wtraced, Distr distr,
           BaseType a) =>
-         trace -> GenVal key distr elt a ->
-         GenVal key distr wtraced a
+         trace -> GenVal key distr elt a -> GenVal key distr wtraced a
 infer tr (Sample k dist deriv) =
   Evaluate
     (case traceValue tr k of
-       Observe x -> ret $ let Just x' = fromDynamic x in
-                          makeWTraced (x', emptyTrace, deriv x')
-       Intervene x -> ret $ let Just x' = fromDynamic x in
-                            makeWTraced (x', emptyTrace, 1.0)
+       Observe x   -> ret $ let Just x' = fromDynamic x
+                            in makeWTraced (x', emptyTrace, deriv x')
+       Intervene x -> ret $ let Just x' = fromDynamic x
+                            in makeWTraced (x', emptyTrace, 1.0)
        _ ->
          Evaluate
            (Sample k
@@ -247,24 +244,24 @@ infer tr (Sample k dist deriv) =
                      (\x -> makeWTraced (x, emptyTrace, 1.0))
                      dist)
                    (extendByZeroW deriv))
-           (Gen $ \xtw -> let (x, _, _) = getWTraced xtw in
-                          ret $ makeWTraced (x, emptyTrace, 1.0)))
+           (Gen $ \xtw -> let (x, _, _) = getWTraced xtw
+                          in ret $ makeWTraced (x, emptyTrace, 1.0)))
     (Gen $ \ytw ->
        let (y, _, w) = getWTraced ytw
-           (t, w') = if isNullKey k
-                       then (emptyTrace, 1.0)
-                       else (kvTrace k (Traced $ show y), w) in
-       ret $ makeWTraced (y, t, w'))
+           (t, w')   = if isNullKey k
+                         then (emptyTrace, 1.0)
+                         else (kvTrace k (Traced $ show y), w)
+       in ret $ makeWTraced (y, t, w'))
 infer tr (Evaluate x f) =
   Evaluate
     (infer tr x)
     (Gen $ \xsv ->
-       let (_, s, v) = getWTraced xsv in
-       Evaluate
-         (Evaluate (ret xsv) (infer' tr f))
-         (Gen $ \ytw ->
-            let (y, t, w) = getWTraced ytw in
-            ret $ makeWTraced (y, appendTrace s t, v * w)))
+       let (_, s, v) = getWTraced xsv
+       in Evaluate
+            (Evaluate (ret xsv) (infer' tr f))
+            (Gen $ \ytw ->
+               let (y, t, w) = getWTraced ytw
+               in ret $ makeWTraced (y, appendTrace s t, v * w)))
 
 infer' :: (Trace trace key elt traced wtraced, Distr distr,
            BaseType a, BaseType b) =>
@@ -275,12 +272,12 @@ infer' tr (Compose f1 f2) =
   Compose
     (infer' tr f1)
     (Gen $ \xsv ->
-       let (_, s, v) = getWTraced xsv in
-       Evaluate
-         (Evaluate (ret xsv) (infer' tr f2))
-         (Gen $ \ytw ->
-            let (y, t, w) = getWTraced ytw in
-            ret $ makeWTraced (y, appendTrace s t, v * w)))
+       let (_, s, v) = getWTraced xsv
+       in Evaluate
+            (Evaluate (ret xsv) (infer' tr f2))
+            (Gen $ \ytw ->
+               let (y, t, w) = getWTraced ytw
+               in ret $ makeWTraced (y, appendTrace s t, v * w)))
 
 
 --
@@ -328,21 +325,22 @@ instance Key key =>
                key
                MyElt
                (MyTraced key)
-               (MyWTraced key) where
-  getTrace = myTrace
-  emptyTrace = MyTrace []
+               (MyWTraced key)
+         where
+  getTrace    = myTrace
+  emptyTrace  = MyTrace []
   kvTrace k v = MyTrace [(k, v)]
   appendTrace (MyTrace t1) (MyTrace t2) = MyTrace (t1 ++ t2)
-  getTraced = myTraced
-  makeTraced = MyTraced
-  getWTraced = myWTraced
+  getTraced   = myTraced
+  makeTraced  = MyTraced
+  getWTraced  = myWTraced
   makeWTraced = MyWTraced
 
 -- Example/computation-related things
 
 instance BaseType Int where
 instance Key Int where
-  nullKey = -1
+  nullKey   = -1
   isNullKey = (== nullKey)
 
 data MySet = Tails | Heads deriving (Eq, Show, Typeable)
@@ -365,7 +363,8 @@ drunkenNotScore x (MyElt y) = if y == x then 0.1 else 0.9
 drunkenNot :: (Key key, Distr distr) =>
               (MySet -> distr MyElt MySet) -> key ->
               GenFn key distr MyElt MySet MySet
-drunkenNot d k = Gen $ \(MyElt x) -> Sample k (d x) (drunkenNotScore x)
+drunkenNot d k = Gen $ \(MyElt x) ->
+                         Sample k (d x) (drunkenNotScore x)
 
 tObs = MyTrace [(0 :: Int, Observe $ toDyn (MyElt Heads))]
 tInt = MyTrace [(0 :: Int, Intervene $ toDyn (MyElt Heads))]
@@ -380,11 +379,11 @@ tInt = MyTrace [(0 :: Int, Intervene $ toDyn (MyElt Heads))]
 squashDiracs :: Eq a => [(a, Double)] -> [(a, Double)]
 squashDiracs [] = []
 squashDiracs ((x, v) : xvs) =
-  let yws = squashDiracs xvs
-      hit = filter (\yw -> fst yw == x) yws
-      miss = filter (\yw -> fst yw /= x) yws in
-  if null hit then (x, v) : yws
-              else (x, v + (snd $ head hit)) : miss
+  let yws  = squashDiracs xvs
+      hit  = filter (\(y, _) -> y == x) yws
+      miss = filter (\(y, _) -> y /= x) yws
+  in if null hit then (x, v) : yws
+                 else (x, v + (snd $ head hit)) : miss
 
 -- The latent monad in this example is similar to the common
 -- list/"nondeterminism" monad, but here the list values are distinct,
@@ -401,19 +400,15 @@ instance Show (elt a) => Show (Diracs elt a) where
   show (Diracs d) = "Diracs" ++ concat (map (\l -> "\n " ++ show l) d)
 instance Distr Diracs where
   pushForward f = Diracs . map (\(x, u) -> (f x, u)) . diracs
-  dirac x = Diracs [(x, 1.0)]
+  dirac x       = Diracs [(x, 1.0)]
   mixture d1 d2 = Diracs . squashDiracs . concat $
-    map (\xu -> let (x, u) = xu in
-                map (\yv -> let (y, v) = yv in (y, u * v))
-                    (diracs $ d2 x))
+    map (\(x, u) -> map (\(y, v) -> (y, u * v)) (diracs $ d2 x))
         (diracs d1)
 
-tracing1 = tracing
-  :: GenVal Int Diracs MyElt MySet ->
-     GenVal Int Diracs (MyTraced Int) MySet
-infer1 = infer
-  :: MyTrace Int -> GenVal Int Diracs MyElt MySet ->
-     GenVal Int Diracs (MyWTraced Int) MySet
+tracing1 = tracing :: GenVal Int Diracs MyElt MySet ->
+                      GenVal Int Diracs (MyTraced Int) MySet
+infer1 = infer :: MyTrace Int -> GenVal Int Diracs MyElt MySet ->
+                  GenVal Int Diracs (MyWTraced Int) MySet
 
 input1 = input :: GenVal Int Diracs MyElt MySet
 input1' = input' :: GenVal Int Diracs MyElt MySet
@@ -450,12 +445,10 @@ type DSampler = MDistr ((->) ())
 instance Show (elt a) => Show (DSampler elt a) where
   show s = "() -> " ++ show (mDistr s ())
 
-tracing2 = tracing
-  :: GenVal Int DSampler MyElt MySet ->
-     GenVal Int DSampler (MyTraced Int) MySet
-infer2 = infer
-  :: MyTrace Int -> GenVal Int DSampler MyElt MySet ->
-     GenVal Int DSampler (MyWTraced Int) MySet
+tracing2 = tracing :: GenVal Int DSampler MyElt MySet ->
+                      GenVal Int DSampler (MyTraced Int) MySet
+infer2 = infer :: MyTrace Int -> GenVal Int DSampler MyElt MySet ->
+                  GenVal Int DSampler (MyWTraced Int) MySet
 
 input2 = input :: GenVal Int DSampler MyElt MySet
 input2' = input' :: GenVal Int DSampler MyElt MySet
