@@ -89,12 +89,9 @@ data GenVal key distr elt a where
   Evaluate :: (EltType elt, BaseType c, BaseType a) =>
               GenVal key distr elt c -> GenFn key distr elt c a
               -> GenVal key distr elt a
-
-kronecker :: (Eq a) => a -> a -> Double
-kronecker x y = if x == y then 1.0 else 0.0
 ret :: (Key key, Distr distr, EltType elt, BaseType a) =>
        elt a -> GenVal key distr elt a
-ret x = Sample nullKey (dirac x) (kronecker x)
+ret x = Sample nullKey (dirac x) (\y -> if y == x then 1.0 else 0.0)
 
 -- Defines generative functions, similarly.
 data GenFn key distr elt a b where
@@ -110,13 +107,14 @@ data GenFn key distr elt a b where
 -- together into a single type.
 
 -- Defines the "Gen" interpretation [[ ]]_g from P(f(A)) to R(f(A)).
-runGen :: (Key key, Distr distr, EltType elt, BaseType a) =>
+runGen :: (Key key, Distr distr, EltType elt,
+           BaseType a) =>
           GenVal key distr elt a -> distr elt a
 runGen (Sample k sample score) = sample
 runGen (Evaluate x f) = mixture (runGen x) (runGen' f)
 
-runGen' :: (Key key, Distr distr,
-            EltType elt, BaseType a, BaseType b) =>
+runGen' :: (Key key, Distr distr, EltType elt,
+            BaseType a, BaseType b) =>
            GenFn key distr elt a b -> elt a -> distr elt b
 runGen' (Gen f) = runGen . f
 runGen' (Compose f1 f2) = \x -> mixture (runGen' f1 x) (runGen' f2)
@@ -353,15 +351,13 @@ input' = Sample (0 :: Int)
                 (dirac $ MyElt Tails)
                 (\(MyElt x) -> if x == Tails then 1.0 else 0.0)
 
-drunkenNotList :: (Fractional t) => MySet -> [(MyElt MySet, t)]
+drunkenNotList :: Fractional t => MySet -> [(MyElt MySet, t)]
 drunkenNotList x = [(MyElt $ myNot x, 0.9), (MyElt x, 0.1)]
-drunkenNotScore :: MySet -> MyElt MySet -> Double
-drunkenNotScore x (MyElt y) = if y == x then 0.1 else 0.9
 drunkenNot :: (Key key, Distr distr) =>
               (MySet -> distr MyElt MySet) -> key ->
               GenFn key distr MyElt MySet MySet
 drunkenNot d k = Gen $ \(MyElt x) ->
-                         Sample k (d x) (drunkenNotScore x)
+  Sample k (d x) (\(MyElt y) -> if y == x then 0.1 else 0.9)
 
 tObs = MyTrace [(0 :: Int, Observe $ toDyn (MyElt Heads))]
 tInt = MyTrace [(0 :: Int, Intervene $ toDyn (MyElt Heads))]
